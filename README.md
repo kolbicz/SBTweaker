@@ -43,10 +43,11 @@ The resulting `.deb` lands in `packages/`.
 
 ## Credits
 
-- [DarkSword Tweaks](https://github.com/kolbicz/DarkSword-Tweaks/) — this
-  package reimplements these tweaks as in-process substrate hooks.
-- [cyanide](https://github.com/0xjohnnydev/cyanide) — the original
-  sbcustomizer / darksword code the DarkSword tweaks trace back to.
+- [DarkSword Tweaks](https://github.com/kolbicz/DarkSword-Tweaks/) — my
+  tweak collection, implemented by [cyanide](https://github.com/0xjohnnydev/cyanide);
+  this package reimplements them as in-process substrate hooks.
+- SBCustomizer (from [cyanide](https://github.com/0xjohnnydev/cyanide)) —
+  used as the starting point for this project.
 - [Speedster](https://github.com/Hoangdus/Speedster/) — reference for the
   wake/sleep animation settings (backlightFadeDuration vs.
   speedMultiplierForWake mapping).
