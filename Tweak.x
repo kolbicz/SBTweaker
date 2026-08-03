@@ -12,6 +12,8 @@
 //  - darksword_layout.m: spacing & icon scaling
 //  - darksword disable_app_library(): hide App Library
 //  - darksword_tweaks.m double-tap-to-lock: home & lock screen gestures
+//  - FastAnimations: core animation clamp & Fast Copy callout (these two
+//    also load into every UIKit app via the com.apple.UIKit filter entry)
 //
 // Icon arrangement and add-to-dock from the original sbcustomizer.m were
 // dropped.
@@ -899,6 +901,45 @@ static BOOL sbt_transition_is_wake = YES;
 }
 %end
 
+// Faster Core Animation: clamp every explicit CA transaction duration to
+// near zero. Injection equivalent of the FastAnimations hook — the
+// DarkSword/cyanide variant uses CALayer.speed on all SpringBoard windows
+// instead, because a remote call cannot hook.
+static BOOL sbt_is_springboard = NO;
+
+static inline double sbt_scaled_duration(double original) {
+    if (original <= 0.0)  return 0.0;
+    if (original <= 0.05) return original;
+    return 0.01;
+}
+
+%hook CATransaction
++ (void)setAnimationDuration:(double)arg1 {
+    if (sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), YES))
+        %orig(sbt_scaled_duration(arg1));
+    else
+        %orig(arg1);
+}
+// FastAnimations parity: kill implicit animations inside apps entirely.
+// SpringBoard legitimately toggles disableActions itself, so pass through.
++ (void)setDisableActions:(BOOL)arg1 {
+    if (!sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), YES) || sbt_is_springboard)
+        %orig(arg1);
+    else
+        %orig(YES);
+}
+%end
+
+// Fast Copy: show the copy/paste callout bar immediately instead of after
+// UIKit's built-in delay. Inspired by the classic Fast Copy tweak. Fires in
+// every app, not just SpringBoard (the substrate filter includes
+// com.apple.UIKit).
+%hook UITextSelectionView
+- (void)showCalloutBarAfterDelay:(double)arg1 {
+    %orig(sbc_pref_bool_live(CFSTR("fastCopy"), YES) ? 0 : arg1);
+}
+%end
+
 // ------------------------------------------------------------------ entry
 
 static void sbc_apply(void) {
@@ -1001,6 +1042,8 @@ static NSDictionary *sbc_default_values(void) {
         @"noWakeAnim":       @YES,
         @"noSleepFade":      @YES,
         @"noIconsFlyIn":     @YES,
+        @"fasterCoreAnimation": @YES,
+        @"fastCopy":            @YES,
     };
     return d;
 }
@@ -1047,6 +1090,14 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 }
 
 %ctor {
+    // The filter also injects into every UIKit app (needed for the CA and
+    // text-callout hooks). Everything below is SpringBoard-only: seeding
+    // prefs from arbitrary apps is pointless, and the respring relay must
+    // never call exitAndRelaunch: from inside a random app.
+    sbt_is_springboard = [[[NSBundle mainBundle] bundleIdentifier]
+                          isEqualToString:@"com.apple.springboard"];
+    if (!sbt_is_springboard) return;
+
     sbc_seed_defaults();
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL, sbc_apply_notification,

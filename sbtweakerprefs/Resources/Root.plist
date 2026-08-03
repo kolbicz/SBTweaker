@@ -262,7 +262,7 @@
 			<key>label</key>
 			<string>Animations</string>
 			<key>footerText</key>
-			<string>UIAnimationDragCoefficient — lower is faster. 1.0 is stock and leaves the system value untouched; a respring then restores stock behavior. Disable Wake Animation affects turning the screen on, Disable Screen Off Fade affects turning it off.</string>
+			<string>UIAnimationDragCoefficient — lower is faster. 1.0 is stock and leaves the system value untouched; a respring then restores stock behavior. Disable Wake Animation affects turning the screen on, Disable Screen Off Fade affects turning it off. Faster Core Animation and Fast Copy also apply inside apps and take effect immediately.</string>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -313,6 +313,30 @@
 			<string>noIconsFlyIn</string>
 			<key>label</key>
 			<string>Disable Unlock Icon Fly-In</string>
+			<key>default</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>fasterCoreAnimation</string>
+			<key>label</key>
+			<string>Faster Core Animation</string>
+			<key>default</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>fastCopy</string>
+			<key>label</key>
+			<string>Fast Copy</string>
 			<key>default</key>
 			<true/>
 		</dict>

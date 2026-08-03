@@ -23,6 +23,9 @@ substrate hooks.
   - Disable Wake Animation (screen on)
   - Disable Screen Off Fade (screen off)
   - Disable Unlock Icon Fly-In
+  - Faster Core Animation (clamps Core Animation durations and disables
+    implicit animations — also inside apps)
+  - Fast Copy (the copy/paste menu appears instantly — also inside apps)
 
 All settings live in Settings → SBTweaker. Changes take effect after a
 respring (a respring button is included); the animation switches apply
@@ -51,6 +54,8 @@ The resulting `.deb` lands in `packages/`.
 - [Speedster](https://github.com/Hoangdus/Speedster/) — reference for the
   wake/sleep animation settings (backlightFadeDuration vs.
   speedMultiplierForWake mapping).
+- Fast Copy — inspiration for the instant copy/paste menu
+  ([idownloadblog](https://www.idownloadblog.com/2010/10/25/fast-copy-speeds-up-your-iphones-copy-and-paste-functionality/)).
 
 ## License
 
