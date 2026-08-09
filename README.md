@@ -2,8 +2,8 @@
 
 A collection of SpringBoard tweaks in a single package, with a preference
 bundle. These are reimplementations of my
-[DarkSword Tweaks](https://github.com/kolbicz/DarkSword-Tweaks/) for the
-[Relaxin jailbreak](https://relaxin.owngoal.dev/) (iOS 17.0 – 17.3.1),
+[DarkSword Tweaks](https://github.com/kolbicz/DarkSword-Tweaks/) for [rootless](https://ellekit.space/dopamine/) and
+[roothide](https://relaxin.owngoal.dev/) jailbreaks (iOS 17.0 – 17.3.1),
 converted from out-of-process RemoteCall code to classic in-process
 substrate hooks.
 
