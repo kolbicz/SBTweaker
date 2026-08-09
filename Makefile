@@ -1,10 +1,10 @@
 # Build against the roothide theos fork (installed side-by-side).
-export THEOS := $(HOME)/theos-roothide
+export THEOS ?= $(HOME)/theos-roothide
 
 export TARGET = iphone:clang:16.5:15.0
 export ARCHS = arm64 arm64e
 
-THEOS_PACKAGE_SCHEME = roothide
+THEOS_PACKAGE_SCHEME ?= roothide
 
 INSTALL_TARGET_PROCESSES = SpringBoard
 
