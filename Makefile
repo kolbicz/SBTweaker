@@ -1,10 +1,11 @@
-# Build against the roothide theos fork (installed side-by-side).
-export THEOS := $(HOME)/theos-roothide
+# Rootless is the default. Override THEOS, TARGET and
+# THEOS_PACKAGE_SCHEME=roothide for a roothide package.
+export THEOS ?= $(HOME)/theos
 
-export TARGET = iphone:clang:16.5:15.0
+export TARGET ?= iphone:clang:15.6:15.0
 export ARCHS = arm64 arm64e
 
-THEOS_PACKAGE_SCHEME = roothide
+THEOS_PACKAGE_SCHEME ?= rootless
 
 INSTALL_TARGET_PROCESSES = SpringBoard
 

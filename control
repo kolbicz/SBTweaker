@@ -1,8 +1,8 @@
 Package: cz.kolbi.sbtweaker
 Name: SBTweaker
-Version: 1.1
+Version: 1.2
 Architecture: iphoneos-arm
-Description: SpringBoard tweaks: dock size, home grid, spacing, icon scale, hide App Library, double-tap to lock, animation speed, fast copy. Reimplementation of DarkSword Tweaks for the Relaxin jailbreak (iOS 17.0 - 17.3.1)
+Description: SpringBoard tweaks for rootless and roothide jailbreaks on iOS 15 and newer: dock size, portrait/landscape Home Screen grids, spacing, icon scale, App Library, double-tap to lock, animation speed, and fast copy.
 Maintainer: Kolbicz
 Author: Kolbicz
 Section: Tweaks

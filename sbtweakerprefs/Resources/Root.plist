@@ -8,7 +8,7 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>footerText</key>
-			<string>Changes take effect after a respring.</string>
+			<string>The master switch disables every SBTweaker feature, including system-wide animation and copy hooks. Changes take effect after a respring.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -65,6 +65,8 @@
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>Home Screen Grid</string>
+			<key>footerText</key>
+			<string>Landscape Columns and Rows only affect rotating Home Screens (iPad). The defaults match the previous automatic layout.</string>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -78,7 +80,7 @@
 			<key>min</key>
 			<integer>3</integer>
 			<key>max</key>
-			<integer>7</integer>
+			<integer>8</integer>
 			<key>default</key>
 			<integer>5</integer>
 			<key>isInteger</key>
@@ -101,6 +103,85 @@
 			<integer>6</integer>
 			<key>isInteger</key>
 			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>SBTNumberCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>hsColsLandscape</string>
+			<key>label</key>
+			<string>Landscape Columns</string>
+			<key>min</key>
+			<integer>3</integer>
+			<key>max</key>
+			<integer>8</integer>
+			<key>default</key>
+			<integer>6</integer>
+			<key>isInteger</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>SBTNumberCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>hsRowsLandscape</string>
+			<key>label</key>
+			<string>Landscape Rows</string>
+			<key>min</key>
+			<integer>4</integer>
+			<key>max</key>
+			<integer>8</integer>
+			<key>default</key>
+			<integer>5</integer>
+			<key>isInteger</key>
+			<true/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Landscape Layout</string>
+			<key>footerText</key>
+			<string>Applied only on rotating Home Screens when the installed SpringBoard version exposes separate landscape geometry.</string>
+		</dict>
+		<dict>
+			<key>cellClass</key><string>SBTNumberCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeExLLandscape</string>
+			<key>label</key><string>Extra Left</string>
+			<key>min</key><real>-20</real><key>max</key><real>60</real><key>default</key><real>20</real>
+		</dict>
+		<dict>
+			<key>cellClass</key><string>SBTNumberCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeExRLandscape</string>
+			<key>label</key><string>Extra Right</string>
+			<key>min</key><real>-20</real><key>max</key><real>60</real><key>default</key><real>20</real>
+		</dict>
+		<dict>
+			<key>cellClass</key><string>SBTNumberCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeExTLandscape</string>
+			<key>label</key><string>Extra Top</string>
+			<key>min</key><real>-20</real><key>max</key><real>60</real><key>default</key><real>20</real>
+		</dict>
+		<dict>
+			<key>cellClass</key><string>SBTNumberCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeExBLandscape</string>
+			<key>label</key><string>Extra Bottom</string>
+			<key>min</key><real>-20</real><key>max</key><real>200</real><key>default</key><real>80</real>
+		</dict>
+		<dict>
+			<key>cellClass</key><string>SBTNumberCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeScaleLandscape</string>
+			<key>label</key><string>Icon Scale</string>
+			<key>min</key><real>0.5</real><key>max</key><real>1.5</real><key>default</key><real>0.98</real>
 		</dict>
 		<dict>
 			<key>cell</key>

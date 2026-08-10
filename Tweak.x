@@ -1,10 +1,12 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
+#import <substrate.h>
 #import <dlfcn.h>
 #import <stdint.h>
 #import <stdbool.h>
 #import <math.h>
+#import "SBTDefaults.h"
 
 // SBTweaker — injection-tweak conversions of cyanide tweaks, all running
 // inside SpringBoard on the main thread (no RemoteCall plumbing):
@@ -59,6 +61,7 @@ typedef struct {
 - (id)iconListViewAtIndex:(NSUInteger)index;
 // darksword_layout.m additions
 - (void)setPortraitLayoutInsets:(UIEdgeInsets)insets;
+- (SBIconImageInfo)iconImageInfo;
 - (void)setIconImageInfo:(SBIconImageInfo)info;
 - (void)setNeedsRelayout:(BOOL)value;
 - (void)relayout;
@@ -74,7 +77,7 @@ typedef struct {
 + (instancetype)sharedInstance;
 @end
 
-static CFStringRef const kPrefsDomain = CFSTR("cz.kolbi.sbtweaker");
+#define kPrefsDomain SBTPreferencesDomain
 static CFStringRef const kApplyNotification = CFSTR("cz.kolbi.sbtweaker/apply");
 
 static int clampi(int v, int lo, int hi) {
@@ -191,10 +194,6 @@ static void patch_homescreen_grid(id iconCtrl, id mgr, id cfg, int cols, int row
         [cfg setNumberOfPortraitColumns:(NSUInteger)cols];
         if ([cfg respondsToSelector:@selector(setNumberOfPortraitRows:)])
             [cfg setNumberOfPortraitRows:(NSUInteger)rows];
-        if ([cfg respondsToSelector:@selector(setNumberOfLandscapeColumns:)])
-            [cfg setNumberOfLandscapeColumns:(NSUInteger)rows];
-        if ([cfg respondsToSelector:@selector(setNumberOfLandscapeRows:)])
-            [cfg setNumberOfLandscapeRows:(NSUInteger)cols];
         NSLog(@"[SBC] hs provider cols=%d rows=%d", cols, rows);
     }
 
@@ -237,12 +236,35 @@ static void apply_dock_spacing(id dockCfg, double extraH) {
 
 // ----------------------------------------------------- scaling (darksword_layout)
 
-static SBIconImageInfo scaled_icon_image_info(double scale) {
-    SBIconImageInfo info;
-    info.size = CGSizeMake(60.0 * scale, 60.0 * scale);
-    info.scale = 2.0;
-    info.continuousCornerRadius = 13.5 * scale;
+static SBIconImageInfo scaled_icon_image_info(SBIconImageInfo info, double scale) {
+    // Preserve the device/OS-provided pixel scale and base geometry.
+    info.size.width *= scale;
+    info.size.height *= scale;
+    info.continuousCornerRadius *= scale;
     return info;
+}
+
+static UIEdgeInsets constrained_grid_insets(UIEdgeInsets insets, int columns,
+                                             int rows, double iconScale,
+                                             BOOL landscape) {
+    CGSize screen = [UIScreen mainScreen].bounds.size;
+    CGFloat width = landscape ? MAX(screen.width, screen.height) : MIN(screen.width, screen.height);
+    CGFloat height = landscape ? MIN(screen.width, screen.height) : MAX(screen.width, screen.height);
+    CGFloat minimumCell = 36.0 * MAX(0.5, MIN(iconScale, 1.5));
+    CGFloat horizontalBudget = MAX(0.0, width - columns * minimumCell);
+    CGFloat verticalBudget = MAX(0.0, height - rows * minimumCell);
+
+    CGFloat excess = insets.left + insets.right - horizontalBudget;
+    if (excess > 0.0) {
+        insets.left -= excess / 2.0;
+        insets.right -= excess / 2.0;
+    }
+    excess = insets.top + insets.bottom - verticalBudget;
+    if (excess > 0.0) {
+        insets.top -= excess / 2.0;
+        insets.bottom -= excess / 2.0;
+    }
+    return insets;
 }
 
 // SBApplicationIcon only — widgets/folders assert on forced 60x60.
@@ -263,10 +285,9 @@ static void refresh_list_view_icons(id listView, SBIconImageInfo info) {
 }
 
 static void apply_home_scale(id mgr, id cfg, double scale) {
-    if (scale <= 0.0 || scale > 2.0) return;
-    SBIconImageInfo info = scaled_icon_image_info(scale);
-    if ([cfg respondsToSelector:@selector(setIconImageInfo:)])
-        [cfg setIconImageInfo:info];
+    if (scale <= 0.0 || scale > 2.0 || ![cfg respondsToSelector:@selector(iconImageInfo)]) return;
+    // The getter hook already returns the stock geometry scaled once.
+    SBIconImageInfo info = [cfg iconImageInfo];
 
     id rootFolder = [mgr respondsToSelector:@selector(rootFolderController)] ? [mgr rootFolderController] : nil;
     if (![rootFolder respondsToSelector:@selector(iconListViewCount)]) return;
@@ -281,10 +302,9 @@ static void apply_home_scale(id mgr, id cfg, double scale) {
 }
 
 static void apply_dock_scale(id dock, id dockCfg, double scale) {
-    if (scale <= 0.0 || scale > 2.0 || !dock) return;
-    SBIconImageInfo info = scaled_icon_image_info(scale);
-    if ([dockCfg respondsToSelector:@selector(setIconImageInfo:)])
-        [dockCfg setIconImageInfo:info];
+    if (scale <= 0.0 || scale > 2.0 || !dock ||
+        ![dockCfg respondsToSelector:@selector(iconImageInfo)]) return;
+    SBIconImageInfo info = [dockCfg iconImageInfo];
     refresh_list_view_icons(dock, info);
     NSLog(@"[SBC:SCALE] dock scale=%.2f", scale);
 }
@@ -311,6 +331,7 @@ static void apply_dock_scale(id dock, id dockCfg, double scale) {
 @end
 
 static NSDictionary *sbc_cachedPrefs = nil;
+static CFAbsoluteTime sbc_prefs_loaded_at = 0;
 
 // Preferences go through CFPreferences/cfprefsd — the same channel the
 // Settings pane writes through. Reading the plist file directly could serve
@@ -322,11 +343,15 @@ static NSDictionary *sbc_reload_prefs(void) {
                                                   kCFPreferencesCurrentUser,
                                                   kCFPreferencesAnyHost);
     sbc_cachedPrefs = CFBridgingRelease(d);
+    sbc_prefs_loaded_at = CFAbsoluteTimeGetCurrent();
     return sbc_cachedPrefs;
 }
 
 static NSDictionary *sbc_prefs(void) {
-    if (!sbc_cachedPrefs) sbc_reload_prefs();
+    // Hot hooks such as CATransaction must not make a cfprefsd round-trip on
+    // every call. Refresh at most once per second so switches still feel live.
+    if (!sbc_cachedPrefs || CFAbsoluteTimeGetCurrent() - sbc_prefs_loaded_at >= 1.0)
+        sbc_reload_prefs();
     return sbc_cachedPrefs;
 }
 
@@ -396,7 +421,7 @@ static int sbc_config_kind(id cfg) {
     if (kind == SBC_CFG_DOCK)
         return (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
     if (kind == SBC_CFG_ROOT)
-        return (NSUInteger)clampi((int)prefInt(p, @"hsCols", 5), 3, 7);
+        return (NSUInteger)clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
     return orig;
 }
 
@@ -410,10 +435,14 @@ static int sbc_config_kind(id cfg) {
         return UIEdgeInsetsMake(0.0, 16.0 + h, 0.0, 16.0 + h);
     }
     if (kind == SBC_CFG_ROOT) {
-        return UIEdgeInsetsMake(60.0 + prefDouble(p, @"homeExT", 40.0),
-                                27.0 + prefDouble(p, @"homeExL", 20.0),
-                                100.0 + prefDouble(p, @"homeExB", 180.0),
-                                27.0 + prefDouble(p, @"homeExR", 20.0));
+        UIEdgeInsets insets = UIEdgeInsetsMake(60.0 + prefDouble(p, @"homeExT", 40.0),
+                                               27.0 + prefDouble(p, @"homeExL", 20.0),
+                                               100.0 + prefDouble(p, @"homeExB", 180.0),
+                                               27.0 + prefDouble(p, @"homeExR", 20.0));
+        return constrained_grid_insets(insets,
+            clampi((int)prefInt(p, @"hsCols", 5), 3, 8),
+            clampi((int)prefInt(p, @"hsRows", 6), 4, 8),
+            prefDouble(p, @"homeScale", 0.98), NO);
     }
     return orig;
 }
@@ -427,9 +456,91 @@ static int sbc_config_kind(id cfg) {
     double scale = kind == SBC_CFG_DOCK ? prefDouble(p, @"dockScale", 0.98)
                                         : prefDouble(p, @"homeScale", 0.98);
     if (scale <= 0.0 || scale > 2.0) return orig;
-    return scaled_icon_image_info(scale);
+    return scaled_icon_image_info(orig, scale);
 }
 %end
+
+// Landscape accessors vary between SpringBoard releases and device types.
+// Install these hooks manually only when the runtime has a real method and
+// Substrate gives us a valid original implementation. This keeps independent
+// portrait/landscape counts without calling a missing %orig on iOS 16/17.
+static NSUInteger (*sbc_orig_landscape_rows)(id, SEL) = NULL;
+static NSUInteger (*sbc_orig_landscape_columns)(id, SEL) = NULL;
+static UIEdgeInsets (*sbc_orig_landscape_insets)(id, SEL) = NULL;
+static SBIconImageInfo (*sbc_orig_landscape_icon_info)(id, SEL) = NULL;
+
+static NSUInteger sbc_landscape_rows(id self, SEL _cmd) {
+    NSUInteger orig = sbc_orig_landscape_rows
+        ? sbc_orig_landscape_rows(self, _cmd) : 0;
+    NSDictionary *p = sbc_prefs();
+    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
+    return (NSUInteger)clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8);
+}
+
+static NSUInteger sbc_landscape_columns(id self, SEL _cmd) {
+    NSUInteger orig = sbc_orig_landscape_columns
+        ? sbc_orig_landscape_columns(self, _cmd) : 0;
+    NSDictionary *p = sbc_prefs();
+    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
+    return (NSUInteger)clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8);
+}
+
+static UIEdgeInsets sbc_landscape_insets(id self, SEL _cmd) {
+    UIEdgeInsets orig = sbc_orig_landscape_insets
+        ? sbc_orig_landscape_insets(self, _cmd) : UIEdgeInsetsZero;
+    NSDictionary *p = sbc_prefs();
+    if (!prefBool(p, @"enabled", YES) || sbc_config_kind(self) != SBC_CFG_ROOT)
+        return orig;
+    UIEdgeInsets insets = UIEdgeInsetsMake(orig.top + prefDouble(p, @"homeExTLandscape", 20.0),
+                                           orig.left + prefDouble(p, @"homeExLLandscape", 20.0),
+                                           orig.bottom + prefDouble(p, @"homeExBLandscape", 80.0),
+                                           orig.right + prefDouble(p, @"homeExRLandscape", 20.0));
+    return constrained_grid_insets(insets,
+        clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8),
+        clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8),
+        prefDouble(p, @"homeScaleLandscape", 0.98), YES);
+}
+
+static SBIconImageInfo sbc_landscape_icon_info(id self, SEL _cmd) {
+    SBIconImageInfo orig = sbc_orig_landscape_icon_info
+        ? sbc_orig_landscape_icon_info(self, _cmd) : (SBIconImageInfo){0};
+    NSDictionary *p = sbc_prefs();
+    if (!prefBool(p, @"enabled", YES) || sbc_config_kind(self) != SBC_CFG_ROOT)
+        return orig;
+    double scale = prefDouble(p, @"homeScaleLandscape", 0.98);
+    return scale > 0.0 && scale <= 2.0 ? scaled_icon_image_info(orig, scale) : orig;
+}
+
+static void sbc_install_landscape_hooks(void) {
+    Class cls = objc_getClass("SBIconListGridLayoutConfiguration");
+    if (!cls) return;
+
+    SEL rows = @selector(numberOfLandscapeRows);
+    if (class_getInstanceMethod(cls, rows)) {
+        MSHookMessageEx(cls, rows, (IMP)sbc_landscape_rows,
+                        (IMP *)&sbc_orig_landscape_rows);
+    }
+
+    SEL columns = @selector(numberOfLandscapeColumns);
+    if (class_getInstanceMethod(cls, columns)) {
+        MSHookMessageEx(cls, columns, (IMP)sbc_landscape_columns,
+                        (IMP *)&sbc_orig_landscape_columns);
+    }
+
+    SEL insets = NSSelectorFromString(@"landscapeLayoutInsets");
+    if (class_getInstanceMethod(cls, insets)) {
+        MSHookMessageEx(cls, insets, (IMP)sbc_landscape_insets,
+                        (IMP *)&sbc_orig_landscape_insets);
+    }
+
+    SEL iconInfo = NSSelectorFromString(@"landscapeIconImageInfo");
+    if (class_getInstanceMethod(cls, iconInfo)) {
+        MSHookMessageEx(cls, iconInfo, (IMP)sbc_landscape_icon_info,
+                        (IMP *)&sbc_orig_landscape_icon_info);
+    }
+}
 
 %hook SBDockIconListModel
 - (SBCGridSize)gridSize {
@@ -469,26 +580,19 @@ static void sbc_patch_root_config(id cfg) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", YES)) return;
 
-    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 7);
+    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
     int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 4, 8);
     double exL = prefDouble(p, @"homeExL", 20.0), exR = prefDouble(p, @"homeExR", 20.0);
     double exT = prefDouble(p, @"homeExT", 40.0), exB = prefDouble(p, @"homeExB", 180.0);
-    double homeScale = prefDouble(p, @"homeScale", 0.98);
 
     if ([cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)]) {
         [cfg setNumberOfPortraitColumns:(NSUInteger)hsCols];
         if ([cfg respondsToSelector:@selector(setNumberOfPortraitRows:)])
             [cfg setNumberOfPortraitRows:(NSUInteger)hsRows];
-        if ([cfg respondsToSelector:@selector(setNumberOfLandscapeColumns:)])
-            [cfg setNumberOfLandscapeColumns:(NSUInteger)hsRows];
-        if ([cfg respondsToSelector:@selector(setNumberOfLandscapeRows:)])
-            [cfg setNumberOfLandscapeRows:(NSUInteger)hsCols];
     }
     if ([cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
         [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(60.0 + exT, 27.0 + exL,
                                                     100.0 + exB, 27.0 + exR)];
-    if (homeScale > 0.0 && homeScale <= 2.0 && [cfg respondsToSelector:@selector(setIconImageInfo:)])
-        [cfg setIconImageInfo:scaled_icon_image_info(homeScale)];
 }
 
 static void sbc_patch_dock_config(id dock) {
@@ -497,7 +601,6 @@ static void sbc_patch_dock_config(id dock) {
 
     int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
     double dockExH   = prefDouble(p, @"dockExH", 30.0);
-    double dockScale = prefDouble(p, @"dockScale", 0.98);
 
     id cfg = dock_layout_config(dock);
     if ([cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)])
@@ -505,8 +608,6 @@ static void sbc_patch_dock_config(id dock) {
     if ([cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
         [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + dockExH,
                                                     0.0, 16.0 + dockExH)];
-    if (dockScale > 0.0 && dockScale <= 2.0 && [cfg respondsToSelector:@selector(setIconImageInfo:)])
-        [cfg setIconImageInfo:scaled_icon_image_info(dockScale)];
 }
 
 %hook SBHIconManager
@@ -549,29 +650,17 @@ static void sbc_patch_dock_config(id dock) {
 // by the master "enabled" switch.
 
 static BOOL sbc_pref_bool_live(CFStringRef key, BOOL def) {
-    CFTypeRef v = CFPreferencesCopyAppValue(key, kPrefsDomain);
-    BOOL r = def;
-    if (v) {
-        if (CFGetTypeID(v) == CFBooleanGetTypeID()) r = CFBooleanGetValue(v);
-        else if (CFGetTypeID(v) == CFNumberGetTypeID()) {
-            int n = 0;
-            CFNumberGetValue(v, kCFNumberIntType, &n);
-            r = (n != 0);
-        }
-        CFRelease(v);
-    }
-    return r;
+    NSDictionary *prefs = sbc_prefs();
+    id master = prefs[@"enabled"];
+    if (key != CFSTR("enabled") && master && ![master boolValue]) return NO;
+    id value = prefs[(__bridge NSString *)key];
+    return value ? [value boolValue] : def;
 }
 
 static double sbc_pref_double_live(CFStringRef key, double def) {
-    CFTypeRef v = CFPreferencesCopyAppValue(key, kPrefsDomain);
-    double r = def;
-    if (v) {
-        if (CFGetTypeID(v) == CFNumberGetTypeID())
-            CFNumberGetValue(v, kCFNumberDoubleType, &r);
-        CFRelease(v);
-    }
-    return r;
+    NSDictionary *prefs = sbc_prefs();
+    id value = prefs[(__bridge NSString *)key];
+    return value ? [value doubleValue] : def;
 }
 
 static BOOL sbc_hide_app_library(void) {
@@ -581,18 +670,18 @@ static BOOL sbc_hide_app_library(void) {
     return hide;
 }
 
-// The class is SBRootFolderController on some iOS versions and
-// SBHRootFolderController on others — hook whichever exists (a hook on an
-// absent class/method simply never fires).
+// iOS 17.4+/18 back the App Library page with a PLURAL
+// trailingCustomViewControllers array; iOS 15–17.3 use the SINGULAR
+// trailingCustomViewController (and trailingCustomView on the view side).
+// Hook both shapes — a hook on an absent class/method simply never fires.
+// (SBHRootFolderController/SBHRootFolderView never existed; those class
+// names were a wrong guess and are gone now.)
 %hook SBRootFolderController
 - (NSArray *)trailingCustomViewControllers {
     return sbc_hide_app_library() ? @[] : %orig;
 }
-%end
-
-%hook SBHRootFolderController
-- (NSArray *)trailingCustomViewControllers {
-    return sbc_hide_app_library() ? @[] : %orig;
+- (id)trailingCustomViewController {
+    return sbc_hide_app_library() ? nil : %orig;
 }
 %end
 
@@ -600,11 +689,13 @@ static BOOL sbc_hide_app_library(void) {
 - (NSArray *)trailingCustomViewControllers {
     return sbc_hide_app_library() ? @[] : %orig;
 }
-%end
-
-%hook SBHRootFolderView
-- (NSArray *)trailingCustomViewControllers {
-    return sbc_hide_app_library() ? @[] : %orig;
+- (id)trailingCustomView {
+    return sbc_hide_app_library() ? nil : %orig;
+}
+// Belt and braces: force the page count even if a trailing VC was already
+// installed before the hooks were loaded (iOS 15/16).
+- (NSUInteger)_trailingCustomPageCount {
+    return sbc_hide_app_library() ? 0 : %orig;
 }
 %end
 
@@ -613,31 +704,33 @@ static BOOL sbc_hide_app_library(void) {
 - (BOOL)isAppLibrarySupported {
     return sbc_hide_app_library() ? NO : %orig;
 }
+- (BOOL)isAppLibraryAllowed {
+    return sbc_hide_app_library() ? NO : %orig;
+}
+%end
+
+// iPad: also remove the App Library button from the floating dock.
+%hook SBFloatingDockDefaults
+- (BOOL)appLibraryEnabled {
+    return sbc_hide_app_library() ? NO : %orig;
+}
 %end
 
 // Belt and braces for state captured before the hooks were installed: clear
-// the ivars directly, like the original disable_app_library() did.
+// the ivars directly, like the original disable_app_library() did. Plural on
+// iOS 17.4+/18, singular on iOS 15–17.3.
 static void sbc_poke_trailing(id obj) {
     if (!obj) return;
-    Ivar iv = class_getInstanceVariable(object_getClass(obj), "_trailingCustomViewControllers");
+    Ivar iv = class_getInstanceVariable([obj class], "_trailingCustomViewControllers");
     if (iv) {
         object_setIvar(obj, iv, [NSArray array]);
         NSLog(@"[SBC:APPLIB] cleared _trailingCustomViewControllers on %@", object_getClass(obj));
     }
-}
-
-static void sbc_disable_app_library(void) {
-    if (!sbc_hide_app_library()) return;
-    id iconCtrl = [%c(SBIconController) sharedInstance];
-    if (!iconCtrl) return;
-    id mgr = [iconCtrl respondsToSelector:@selector(iconManager)] ? [iconCtrl iconManager] : nil;
-    id rootFC = [mgr respondsToSelector:@selector(rootFolderController)] ? [mgr rootFolderController] : nil;
-    if (!rootFC) return;
-
-    sbc_poke_trailing(rootFC);
-
-    id rootView = [rootFC respondsToSelector:@selector(rootFolderView)] ? [rootFC rootFolderView] : nil;
-    if (rootView) sbc_poke_trailing(rootView);
+    Ivar ivSingular = class_getInstanceVariable([obj class], "_trailingCustomViewController");
+    if (ivSingular) {
+        object_setIvar(obj, ivSingular, nil);
+        NSLog(@"[SBC:APPLIB] cleared _trailingCustomViewController on %@", object_getClass(obj));
+    }
 }
 
 // -------------------------------------------------------- Double-tap to lock
@@ -645,24 +738,21 @@ static void sbc_disable_app_library(void) {
 // Integrated from the standalone DoubleTapLock tweak (itself a conversion of
 // darksword_tweak_double_tap_to_lock_in_session() from cyanide). The two
 // behavioral details are kept:
-//  1. Home screen: a transparent, backmost "catcher" view per icon list page,
-//     so taps on icons/dock never reach the recognizer (an accidental second
-//     tap after launching an app must not lock the device).
-//  2. Lock screen: recognizer on the cover sheet main page view only — the
-//     passcode window is deliberately excluded.
+//  1. Home screen: a recognizer on the full root-folder view. A gesture
+//     delegate rejects touches on icons, folders, the dock and controls.
+//  2. Lock screen: recognizer on the cover sheet root view (the full-screen
+//     container), not on CSMainPageContentViewController's view — on iPad the
+//     main page content is a centered column, so edge taps never reached a
+//     recognizer attached there and double-tap only worked mid-screen.
 // Each area has its own switch (dtlHomeScreen / dtlLockScreen), read live;
 // since recognizers are installed when the views appear, changes fully take
 // effect after a respring.
 
-@interface SBIconListView : UIView
-- (BOOL)isDock;
+@interface CSCoverSheetViewController : UIViewController
 @end
 
-@interface CSMainPageContentViewController : UIViewController
-@end
-
-static char kDTLockCatcherKey;
 static char kDTLockGestureKey;
+static char kDTHomeGestureKey;
 
 static UITapGestureRecognizer *dtl_makeRecognizer(void) {
     UITapGestureRecognizer *gr = [[UITapGestureRecognizer alloc]
@@ -674,32 +764,74 @@ static UITapGestureRecognizer *dtl_makeRecognizer(void) {
     return gr;
 }
 
-%hook SBIconListView
-- (void)didMoveToWindow {
-    %orig;
-    if (!self.window) return;
-    if (!sbc_pref_bool_live(CFSTR("dtlHomeScreen"), YES)) return;
+@interface SBTHomeDoubleTapDelegate : NSObject <UIGestureRecognizerDelegate>
+@end
 
-    NSString *cls = NSStringFromClass([self class]);
-    if (![cls containsString:@"IconListView"]) return;
-    if ([cls containsString:@"Dock"] || [cls containsString:@"Folder"]) return;
-    if ([self respondsToSelector:@selector(isDock)] && [self isDock]) return;
+@implementation SBTHomeDoubleTapDelegate
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    Class iconViewClass = %c(SBIconView);
+    Class dockViewClass = %c(SBDockIconListView);
+    UIView *root = gestureRecognizer.view;
 
-    if (objc_getAssociatedObject(self, &kDTLockCatcherKey)) return;
+    for (UIView *view = touch.view; view && view != root; view = view.superview) {
+        if ([view isKindOfClass:[UIControl class]]) return NO;
+        if (iconViewClass && [view isKindOfClass:iconViewClass]) return NO;
+        if (dockViewClass && [view isKindOfClass:dockViewClass]) return NO;
 
-    UIView *catcher = [[UIView alloc] initWithFrame:self.bounds];
-    catcher.autoresizingMask = UIViewAutoresizingFlexibleWidth | UIViewAutoresizingFlexibleHeight;
-    catcher.userInteractionEnabled = YES;
-    [self insertSubview:catcher atIndex:0];
-    [catcher addGestureRecognizer:dtl_makeRecognizer()];
-
-    objc_setAssociatedObject(self, &kDTLockCatcherKey, catcher, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+        NSString *name = NSStringFromClass([view class]);
+        if ([name containsString:@"Dock"] || [name containsString:@"FolderIcon"])
+            return NO;
+    }
+    return YES;
 }
-%end
+@end
 
-%hook CSMainPageContentViewController
+static SBTHomeDoubleTapDelegate *sbt_home_double_tap_delegate(void) {
+    static SBTHomeDoubleTapDelegate *delegate = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        delegate = [SBTHomeDoubleTapDelegate new];
+    });
+    return delegate;
+}
+
+static void (*sbt_orig_root_did_move_to_window)(id, SEL) = NULL;
+
+static void sbt_root_did_move_to_window(id self, SEL _cmd) {
+    if (sbt_orig_root_did_move_to_window)
+        sbt_orig_root_did_move_to_window(self, _cmd);
+    if (![self window]) return;
+    // Apply once when the real root view enters a window; persistent getter
+    // hooks handle subsequent App Library queries without timer retries.
+    if (sbc_hide_app_library()) sbc_poke_trailing(self);
+    if (!sbc_pref_bool_live(CFSTR("dtlHomeScreen"), YES)) return;
+    if (objc_getAssociatedObject(self, &kDTHomeGestureKey)) return;
+
+    UITapGestureRecognizer *recognizer = dtl_makeRecognizer();
+    recognizer.delegate = sbt_home_double_tap_delegate();
+    [self addGestureRecognizer:recognizer];
+    objc_setAssociatedObject(self, &kDTHomeGestureKey, recognizer,
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+}
+
+static void sbt_install_home_double_tap_hook(void) {
+    Class cls = objc_getClass("SBRootFolderView");
+    SEL selector = @selector(didMoveToWindow);
+    if (!cls || !class_getInstanceMethod(cls, selector)) return;
+    MSHookMessageEx(cls, selector, (IMP)sbt_root_did_move_to_window,
+                    (IMP *)&sbt_orig_root_did_move_to_window);
+}
+
+%hook CSCoverSheetViewController
 - (void)viewDidLoad {
     %orig;
+    // Guard against the Logos superclass pitfall: if CSCoverSheetViewController
+    // does not override viewDidLoad itself, Substrate hooks UIViewController's
+    // implementation and this would run for every view controller in
+    // SpringBoard (attaching a lock recognizer to each view — a likely
+    // watchdog/hang source). Only proceed for actual cover sheet instances.
+    if (![self isKindOfClass:%c(CSCoverSheetViewController)]) return;
     if (!sbc_pref_bool_live(CFSTR("dtlLockScreen"), YES)) return;
     UIView *v = self.view;
     if (!v) return;
@@ -947,8 +1079,10 @@ static void sbc_apply(void) {
     if (!prefBool(p, @"enabled", YES)) { NSLog(@"[SBC] disabled"); return; }
 
     int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
-    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 7);
+    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
     int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 4, 8);
+    int hsColsL      = clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8);
+    int hsRowsL      = clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8);
     double homeExL   = prefDouble(p, @"homeExL", 20.0);
     double homeExR   = prefDouble(p, @"homeExR", 20.0);
     double homeExT   = prefDouble(p, @"homeExT", 40.0);
@@ -957,8 +1091,8 @@ static void sbc_apply(void) {
     double homeScale = prefDouble(p, @"homeScale", 0.98);
     double dockScale = prefDouble(p, @"dockScale", 0.98);
 
-    NSLog(@"[SBC] apply dock=%d hs=%dx%d space=+%.0f/%.0f/%.0f/%.0f dockH=%.0f scale=%.2f/%.2f",
-          dockIcons, hsCols, hsRows,
+    NSLog(@"[SBC] apply dock=%d hs=%dx%d ls=%dx%d space=+%.0f/%.0f/%.0f/%.0f dockH=%.0f scale=%.2f/%.2f",
+          dockIcons, hsCols, hsRows, hsColsL, hsRowsL,
           homeExL, homeExR, homeExT, homeExB, dockExH, homeScale, dockScale);
 
     id iconCtrl = [%c(SBIconController) sharedInstance];
@@ -1004,14 +1138,6 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
                    dispatch_get_main_queue(), ^{
         sbc_apply_drag_coefficient();
     });
-    // App Library poke: retry a few times, rootFolderView may not exist yet
-    // early on. No-ops unless hideAppLibrary is enabled.
-    for (int delay = 2; delay <= 10; delay += 4) {
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            sbc_disable_app_library();
-        });
-    }
 }
 %end
 
@@ -1022,36 +1148,13 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
 // resort if a key is missing entirely. Existing user values are never
 // overwritten.
 static NSDictionary *sbc_default_values(void) {
-    static NSDictionary *d = nil;
-    if (!d) d = @{
-        @"dockIcons":  @5,
-        @"hsCols":     @5,
-        @"hsRows":     @6,
-        @"homeExL":    @20.0,
-        @"homeExR":    @20.0,
-        @"homeExT":    @40.0,
-        @"homeExB":    @180.0,
-        @"dockExH":    @30.0,
-        @"homeScale":  @0.98,
-        @"dockScale":  @0.98,
-        @"restoreDockIcons": @YES,
-        @"hideAppLibrary":   @YES,
-        @"dtlHomeScreen":    @YES,
-        @"dtlLockScreen":    @YES,
-        @"dragCoefficient":  @0.25,
-        @"noWakeAnim":       @YES,
-        @"noSleepFade":      @YES,
-        @"noIconsFlyIn":     @YES,
-        @"fasterCoreAnimation": @YES,
-        @"fastCopy":            @YES,
-    };
-    return d;
+    return SBTDefaultValues();
 }
 
 // Bump kSBTDefaultsVersion to force every install onto the defaults once
 // (e.g. after shipping a bad default). Existing user values are otherwise
 // never touched.
-static NSInteger const kSBTDefaultsVersion = 3;
+#define kSBTDefaultsVersion SBTDefaultsVersion
 
 static void sbc_seed_defaults(void) {
     NSDictionary *defs = sbc_default_values();
@@ -1098,6 +1201,8 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
                           isEqualToString:@"com.apple.springboard"];
     if (!sbt_is_springboard) return;
 
+    sbc_install_landscape_hooks();
+    sbt_install_home_double_tap_hook();
     sbc_seed_defaults();
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL, sbc_apply_notification,

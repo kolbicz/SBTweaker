@@ -1,39 +1,15 @@
 #import <Preferences/PSTableCell.h>
 #import <Preferences/PSSpecifier.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import "../SBTDefaults.h"
 
 // SBTNumberCell — slider with an editable number field beside it.
 // Specifier keys: key, defaults, min, max, default, isInteger (optional bool).
 // Values persist straight to the tweak's defaults domain via CFPreferences;
 // SpringBoard picks them up at the next respring.
 
-static CFStringRef const kPrefsDomain = CFSTR("cz.kolbi.sbtweaker");
-
-// Single source of truth for defaults — the tweak keeps the same table.
-static NSDictionary *sbc_default_values(void) {
-    static NSDictionary *d = nil;
-    if (!d) d = @{
-        @"dockIcons":  @5,
-        @"hsCols":     @5,
-        @"hsRows":     @6,
-        @"homeExL":    @20.0,
-        @"homeExR":    @20.0,
-        @"homeExT":    @40.0,
-        @"homeExB":    @180.0,
-        @"dockExH":    @30.0,
-        @"homeScale":  @0.98,
-        @"dockScale":  @0.98,
-        @"restoreDockIcons": @YES,
-        @"hideAppLibrary":   @YES,
-        @"dtlHomeScreen":    @YES,
-        @"dtlLockScreen":    @YES,
-        @"dragCoefficient":  @0.25,
-        @"noWakeAnim":       @YES,
-        @"noSleepFade":      @YES,
-        @"noIconsFlyIn":     @YES,
-    };
-    return d;
-}
+#define kPrefsDomain SBTPreferencesDomain
+#define sbc_default_values SBTDefaultValues
 
 static id sbc_read_pref(NSString *key) {
     CFPreferencesAppSynchronize(kPrefsDomain);

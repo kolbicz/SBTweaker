@@ -1,37 +1,10 @@
 #import <Preferences/PSListController.h>
 #import <CoreFoundation/CoreFoundation.h>
+#import "../SBTDefaults.h"
 
-static CFStringRef const kPrefsDomain = CFSTR("cz.kolbi.sbtweaker");
-
-// Bump kSBTDefaultsVersion to force every install onto these defaults once
-// (e.g. after shipping a bad default). Existing user values are otherwise
-// never touched.
-static NSInteger const kSBTDefaultsVersion = 3;
-
-static NSDictionary *sbc_default_values(void) {
-    static NSDictionary *d = nil;
-    if (!d) d = @{
-        @"dockIcons":  @5,
-        @"hsCols":     @5,
-        @"hsRows":     @6,
-        @"homeExL":    @20.0,
-        @"homeExR":    @20.0,
-        @"homeExT":    @40.0,
-        @"homeExB":    @180.0,
-        @"dockExH":    @30.0,
-        @"homeScale":  @0.98,
-        @"dockScale":  @0.98,
-        @"restoreDockIcons": @YES,
-        @"hideAppLibrary":   @YES,
-        @"dtlHomeScreen":    @YES,
-        @"dtlLockScreen":    @YES,
-        @"dragCoefficient":  @0.25,
-        @"noWakeAnim":       @YES,
-        @"noSleepFade":      @YES,
-        @"noIconsFlyIn":     @YES,
-    };
-    return d;
-}
+#define kPrefsDomain SBTPreferencesDomain
+#define kSBTDefaultsVersion SBTDefaultsVersion
+#define sbc_default_values SBTDefaultValues
 
 static void sbc_seed_defaults(void) {
     NSDictionary *defs = sbc_default_values();
