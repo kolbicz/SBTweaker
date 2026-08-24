@@ -1,41 +1,44 @@
-#import <Foundation/Foundation.h>
+#import <UIKit/UIKit.h>
 
 static CFStringRef const SBTPreferencesDomain = CFSTR("cz.kolbi.sbtweaker");
-static NSInteger const SBTDefaultsVersion = 3;
+static NSInteger const SBTDefaultsVersion = 8;
 
 static inline NSDictionary *SBTDefaultValues(void) {
     static NSDictionary *values = nil;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
+        BOOL iPad = [UIDevice currentDevice].userInterfaceIdiom == UIUserInterfaceIdiomPad;
         values = @{
-            @"enabled": @YES,
-            @"dockIcons": @5,
-            @"hsCols": @5,
+            @"enabled": @NO,
+            @"dockLayoutEnabled": @NO,
+            @"dockIcons": @4,
+            @"homeGridEnabled": @NO,
+            @"hsCols": iPad ? @5 : @4,
             @"hsRows": @6,
-            @"hsColsLandscape": @6,
-            @"hsRowsLandscape": @5,
-            @"homeExLLandscape": @20.0,
-            @"homeExRLandscape": @20.0,
-            @"homeExTLandscape": @20.0,
-            @"homeExBLandscape": @80.0,
-            @"homeExL": @20.0,
-            @"homeExR": @20.0,
-            @"homeExT": @40.0,
-            @"homeExB": @180.0,
-            @"dockExH": @30.0,
-            @"homeScale": @0.98,
-            @"homeScaleLandscape": @0.98,
-            @"dockScale": @0.98,
-            @"restoreDockIcons": @YES,
-            @"hideAppLibrary": @YES,
-            @"dtlHomeScreen": @YES,
-            @"dtlLockScreen": @YES,
-            @"dragCoefficient": @0.25,
-            @"noWakeAnim": @YES,
-            @"noSleepFade": @YES,
-            @"noIconsFlyIn": @YES,
-            @"fasterCoreAnimation": @YES,
-            @"fastCopy": @YES,
+            @"hsColsLandscape": iPad ? @6 : @4,
+            @"hsRowsLandscape": iPad ? @5 : @6,
+            @"homeSpacingEnabled": @NO,
+            @"homeExL": @0.0,
+            @"homeExR": @0.0,
+            @"homeExT": @0.0,
+            @"homeExB": @0.0,
+            @"dockSpacingEnabled": @NO,
+            @"dockExH": @0.0,
+            @"homeScaleEnabled": @NO,
+            @"homeScale": @1.0,
+            @"dockScaleEnabled": @NO,
+            @"dockScale": @1.0,
+            @"iconLayoutBackupEnabled": @NO,
+            @"hideAppLibrary": @NO,
+            @"dtlHomeScreen": @NO,
+            @"dtlLockScreen": @NO,
+            @"dragCoefficientEnabled": @NO,
+            @"dragCoefficient": @1.0,
+            @"noWakeAnim": @NO,
+            @"noSleepFade": @NO,
+            @"noIconsFlyIn": @NO,
+            @"fasterCoreAnimation": @NO,
+            @"fastCopy": @NO,
         };
     });
     return values;

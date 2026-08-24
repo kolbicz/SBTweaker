@@ -1,8 +1,8 @@
 Package: cz.kolbi.sbtweaker
 Name: SBTweaker
-Version: 1.2
+Version: 1.3
 Architecture: iphoneos-arm
-Description: SpringBoard tweaks for rootless and roothide jailbreaks on iOS 15 and newer: dock size, portrait/landscape Home Screen grids, spacing, icon scale, App Library, double-tap to lock, animation speed, and fast copy.
+Description: Opt-in SpringBoard customizations for rootless and roothide jailbreaks on iOS 15 and newer: dock and Home Screen layouts, icon backup, App Library, double-tap to lock, animations, and fast copy.
 Maintainer: Kolbicz
 Author: Kolbicz
 Section: Tweaks

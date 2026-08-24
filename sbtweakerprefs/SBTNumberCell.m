@@ -18,7 +18,12 @@ static id sbc_read_pref(NSString *key) {
 
 static void sbc_write_pref(NSString *key, id value, BOOL sync) {
     CFPreferencesSetAppValue((__bridge CFStringRef)key, (__bridge CFPropertyListRef)value, kPrefsDomain);
-    if (sync) CFPreferencesAppSynchronize(kPrefsDomain);
+    if (sync) {
+        CFPreferencesAppSynchronize(kPrefsDomain);
+        CFNotificationCenterPostNotification(CFNotificationCenterGetDarwinNotifyCenter(),
+                                             CFSTR("cz.kolbi.sbtweaker/apply"),
+                                             NULL, NULL, YES);
+    }
 }
 
 @interface SBTNumberCell : PSTableCell <UITextFieldDelegate> {

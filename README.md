@@ -7,20 +7,22 @@ These are in-process Substrate-hook reimplementations of my
 
 ## Features
 
-- **Dock**: configurable icon count (4–7), plus optional restore of extra dock
-  icons across resprings and icon-state validation
+- **Dock**: configurable icon count (4–7), including live capacity updates
+  so newly enabled slots can be filled without a respring
 - **Home Screen grid**: configurable columns (3–8) and rows (4–8), set
   independently for portrait and landscape (landscape only affects rotating
   Home Screens, i.e. iPad)
-- **Spacing**: extra portrait and landscape layout insets for the Home Screen,
-  plus dock spacing
-- **Icon scale**: separate Home Screen, landscape Home Screen, and dock scaling
+- **Spacing**: shared portrait/landscape Home Screen insets, plus dock spacing
+- **Icon scale**: separate Home Screen and Dock scaling; the Home value applies
+  in portrait and landscape
 - **Hide App Library**: removes the App Library page
 - **Double Tap to Lock**: separate switches for Home Screen and Lock Screen
-  (ignores icons, folders, dock and the passcode pad)
+  (ignores icons, folders and dock, and is disabled while passcode UI is shown)
+- **Icon Layout Backup**: opt-in automatic backup on native icon-state changes
+  and guarded restore of Home Screen, folders and Dock after rejailbreaking
 - **Animations**:
   - Drag Coefficient slider (UIAnimationDragCoefficient, 0.01–2.00,
-    default 0.25; 1.0 = stock, leaves the system value untouched)
+    default 1.0; 1.0 = stock, leaves the system value untouched)
   - Disable Wake Animation (screen on)
   - Disable Screen Off Fade (screen off)
   - Disable Unlock Icon Fly-In
@@ -28,9 +30,26 @@ These are in-process Substrate-hook reimplementations of my
     implicit animations — also inside apps)
   - Fast Copy (the copy/paste menu appears instantly — also inside apps)
 
-All settings live in Settings → SBTweaker. The master switch disables every
-feature. Changes take effect after a respring (a respring button is included);
-the animation switches update within about one second.
+All settings live in Settings → SBTweaker. Every feature is opt-in and off by
+default; enabling the master switch alone changes nothing. Layout controls
+apply live, and a respring button is included for changes that need one.
+
+## Version 1.3
+
+- Added independent, off-by-default gates for every layout or animation value.
+- Added live Dock capacity updates for 4–7 icons without requiring a respring.
+- Added device-aware stock grid defaults and non-destructive preference
+  migrations that preserve existing settings.
+- Unified Home Screen spacing and scaling across portrait and landscape while
+  retaining independent portrait/landscape row and column counts.
+- Fixed first-frame icon sizing and spacing during respring; removed the old
+  delayed layout application.
+- Fixed absolute, idempotent Home and Dock icon scaling.
+- Improved Home Screen double-tap handling and prevented double-tap-to-lock
+  while the passcode interface is visible.
+- Added automatic icon-layout backup while jailbroken and guarded restoration
+  when jailbroken SpringBoard returns.
+- Removed the unreliable Spotlight dismissal/clearing experiment.
 
 ## Building
 
@@ -70,6 +89,9 @@ Both `.deb` files land in `packages/`. The rootless build uses the
   speedMultiplierForWake mapping).
 - Fast Copy — inspiration for the instant copy/paste menu
   ([idownloadblog](https://www.idownloadblog.com/2010/10/25/fast-copy-speeds-up-your-iphones-copy-and-paste-functionality/)).
+- [IconRestore](https://github.com/OwnGoalStudio/IconRestore) by
+  [OwnGoalStudio](https://github.com/OwnGoalStudio) — reference for guarding
+  SpringBoard's native icon-state saves while restoring a preserved layout.
 
 ## License
 

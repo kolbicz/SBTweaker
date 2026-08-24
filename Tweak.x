@@ -1,6 +1,7 @@
 #import <UIKit/UIKit.h>
 #import <CoreFoundation/CoreFoundation.h>
 #import <objc/runtime.h>
+#import <objc/message.h>
 #import <substrate.h>
 #import <dlfcn.h>
 #import <stdint.h>
@@ -47,6 +48,8 @@ typedef struct {
 - (id)layout;
 - (id)layoutConfiguration;
 - (id)icons;
+- (BOOL)importState:(id)state;
+- (void)noteIconStateChangedExternally;
 - (id)icon;
 - (BOOL)isDock;
 - (void)setAutomaticallyAdjustsLayoutMetricsToFit:(BOOL)value;
@@ -77,8 +80,20 @@ typedef struct {
 + (instancetype)sharedInstance;
 @end
 
+@interface SBDefaultIconModelStore : NSObject
++ (instancetype)sharedInstance;
+- (NSURL *)currentIconStateURL;
+@end
+
+@interface SBIconModelPropertyListFileStore : NSObject
+- (NSURL *)currentIconStateURL;
+- (BOOL)saveCurrentIconState:(id)state error:(NSError **)error;
+- (BOOL)_save:(id)state url:(NSURL *)url error:(NSError **)error;
+@end
+
 #define kPrefsDomain SBTPreferencesDomain
 static CFStringRef const kApplyNotification = CFSTR("cz.kolbi.sbtweaker/apply");
+static BOOL sbc_pref_bool_live(CFStringRef key, BOOL def);
 
 static int clampi(int v, int lo, int hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -140,6 +155,70 @@ static void force_manager_relayout(id mgr) {
     if ([mgr respondsToSelector:@selector(layoutIconListsWithAnimationType:forceRelayout:)])
         [mgr layoutIconListsWithAnimationType:0 forceRelayout:YES];
 }
+
+// ------------------------------------------------------ icon layout backup
+
+static NSString *sbt_icon_layout_backup_path(void) {
+    return @"/var/mobile/Library/Preferences/cz.kolbi.sbtweaker.iconlayout.plist";
+}
+
+static BOOL sbt_icon_restore_guard = NO;
+
+static BOOL sbt_write_icon_layout_snapshot(id state) {
+    if (![NSPropertyListSerialization propertyList:state
+                              isValidForFormat:NSPropertyListBinaryFormat_v1_0])
+        return NO;
+    return [state writeToFile:sbt_icon_layout_backup_path() atomically:YES];
+}
+
+static BOOL sbt_restore_icon_layout(void) {
+    if (!sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"), NO)) return NO;
+    NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:sbt_icon_layout_backup_path()];
+    if (!state.count) return NO;
+
+    id controller = [%c(SBIconController) sharedInstance];
+    id model = [controller respondsToSelector:@selector(model)] ? [controller model] : nil;
+    BOOL restored = NO;
+    @try {
+        id store = [%c(SBDefaultIconModelStore) sharedInstance];
+        NSURL *url = [store respondsToSelector:@selector(currentIconStateURL)]
+            ? [store currentIconStateURL] : nil;
+        if (url.path.length)
+            restored = [state writeToFile:url.path atomically:YES];
+        if ([model respondsToSelector:@selector(importState:)])
+            restored = [model importState:state] || restored;
+        if (restored && [controller respondsToSelector:@selector(noteIconStateChangedExternally)])
+            [controller noteIconStateChangedExternally];
+    } @catch (NSException *exception) {
+        NSLog(@"[SBT:ICONS] restore exception: %@", exception);
+        restored = NO;
+    }
+    NSLog(@"[SBT:ICONS] layout restore %@", restored ? @"requested" : @"failed");
+    return restored;
+}
+
+%hook SBIconModelPropertyListFileStore
+- (BOOL)saveCurrentIconState:(id)state error:(NSError **)error {
+    if (sbt_icon_restore_guard) return YES;
+    BOOL result = %orig;
+    if (result && sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"), NO))
+        sbt_write_icon_layout_snapshot(state);
+    return result;
+}
+
+- (BOOL)_save:(id)state url:(NSURL *)url error:(NSError **)error {
+    if (sbt_icon_restore_guard) return YES;
+    BOOL result = %orig;
+    if (result && sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"), NO)) {
+        NSURL *currentURL = nil;
+        if ([self respondsToSelector:@selector(currentIconStateURL)])
+            currentURL = [(id)self currentIconStateURL];
+        if (!currentURL || [url.path isEqualToString:currentURL.path])
+            sbt_write_icon_layout_snapshot(state);
+    }
+    return result;
+}
+%end
 
 // ---------------------------------------------------------------- grid patches
 
@@ -236,11 +315,13 @@ static void apply_dock_spacing(id dockCfg, double extraH) {
 
 // ----------------------------------------------------- scaling (darksword_layout)
 
-static SBIconImageInfo scaled_icon_image_info(SBIconImageInfo info, double scale) {
-    // Preserve the device/OS-provided pixel scale and base geometry.
-    info.size.width *= scale;
-    info.size.height *= scale;
-    info.continuousCornerRadius *= scale;
+static SBIconImageInfo configured_icon_image_info(double scale) {
+    // SpringBoard's iOS 15–17 application-icon baseline. Returning/writing an
+    // absolute value makes repeated layout passes idempotent (no compounding).
+    SBIconImageInfo info;
+    info.size = CGSizeMake(60.0 * scale, 60.0 * scale);
+    info.scale = 2.0;
+    info.continuousCornerRadius = 13.5 * scale;
     return info;
 }
 
@@ -395,32 +476,34 @@ static int sbc_config_kind(id cfg) {
 - (NSUInteger)numberOfPortraitRows {
     NSUInteger orig = %orig;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
+    if (!prefBool(p, @"homeGridEnabled", NO)) return orig;
     return (NSUInteger)clampi((int)prefInt(p, @"hsRows", 6), 4, 8);
 }
 
 - (NSUInteger)numberOfPortraitColumns {
     NSUInteger orig = %orig;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (!prefBool(p, @"enabled", NO)) return orig;
     int kind = sbc_config_kind(self);
     // Fallback for the dock only: identity lookup can fail during boot (the
     // provider chain may not be up when icon-state validation first asks),
     // which used to cost us the 5th dock icon. A single-row, 4-wide grid is
     // unambiguous enough — the App Library breakage came from the *home*
     // branch matching everything, and that branch stays identity-only.
-    // Gated by restoreDockIcons — this fallback exists purely to survive
-    // boot-time icon-state validation.
-    if (kind == SBC_CFG_UNKNOWN && prefBool(p, @"restoreDockIcons", YES) &&
+    // The dock-count switch owns both its geometry and capacity. This
+    // fallback keeps the configured slot count available during boot-time
+    // icon-state validation before object identity has been established.
+    if (kind == SBC_CFG_UNKNOWN && prefBool(p, @"dockLayoutEnabled", NO) &&
         orig == 4 && [self numberOfPortraitRows] == 1) {
         static BOOL logged = NO;
         if (!logged) { logged = YES; NSLog(@"[SBC] dock config identified by 1-row fallback"); }
         kind = SBC_CFG_DOCK;
     }
-    if (kind == SBC_CFG_DOCK)
+    if (kind == SBC_CFG_DOCK && prefBool(p, @"dockLayoutEnabled", NO))
         return (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
-    if (kind == SBC_CFG_ROOT)
+    if (kind == SBC_CFG_ROOT && prefBool(p, @"homeGridEnabled", NO))
         return (NSUInteger)clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
     return orig;
 }
@@ -428,13 +511,15 @@ static int sbc_config_kind(id cfg) {
 - (UIEdgeInsets)portraitLayoutInsets {
     UIEdgeInsets orig = %orig;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (!prefBool(p, @"enabled", NO)) return orig;
     int kind = sbc_config_kind(self);
     if (kind == SBC_CFG_DOCK) {
+        if (!prefBool(p, @"dockSpacingEnabled", NO)) return orig;
         double h = prefDouble(p, @"dockExH", 30.0);
         return UIEdgeInsetsMake(0.0, 16.0 + h, 0.0, 16.0 + h);
     }
     if (kind == SBC_CFG_ROOT) {
+        if (!prefBool(p, @"homeSpacingEnabled", NO)) return orig;
         UIEdgeInsets insets = UIEdgeInsetsMake(60.0 + prefDouble(p, @"homeExT", 40.0),
                                                27.0 + prefDouble(p, @"homeExL", 20.0),
                                                100.0 + prefDouble(p, @"homeExB", 180.0),
@@ -450,13 +535,15 @@ static int sbc_config_kind(id cfg) {
 - (SBIconImageInfo)iconImageInfo {
     SBIconImageInfo orig = %orig;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (!prefBool(p, @"enabled", NO)) return orig;
     int kind = sbc_config_kind(self);
     if (kind != SBC_CFG_ROOT && kind != SBC_CFG_DOCK) return orig;
+    if (kind == SBC_CFG_ROOT && !prefBool(p, @"homeScaleEnabled", NO)) return orig;
+    if (kind == SBC_CFG_DOCK && !prefBool(p, @"dockScaleEnabled", NO)) return orig;
     double scale = kind == SBC_CFG_DOCK ? prefDouble(p, @"dockScale", 0.98)
                                         : prefDouble(p, @"homeScale", 0.98);
     if (scale <= 0.0 || scale > 2.0) return orig;
-    return scaled_icon_image_info(orig, scale);
+    return configured_icon_image_info(scale);
 }
 %end
 
@@ -473,8 +560,9 @@ static NSUInteger sbc_landscape_rows(id self, SEL _cmd) {
     NSUInteger orig = sbc_orig_landscape_rows
         ? sbc_orig_landscape_rows(self, _cmd) : 0;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
+    if (!prefBool(p, @"homeGridEnabled", NO)) return orig;
     return (NSUInteger)clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8);
 }
 
@@ -482,8 +570,9 @@ static NSUInteger sbc_landscape_columns(id self, SEL _cmd) {
     NSUInteger orig = sbc_orig_landscape_columns
         ? sbc_orig_landscape_columns(self, _cmd) : 0;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return orig;
+    if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
+    if (!prefBool(p, @"homeGridEnabled", NO)) return orig;
     return (NSUInteger)clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8);
 }
 
@@ -491,26 +580,30 @@ static UIEdgeInsets sbc_landscape_insets(id self, SEL _cmd) {
     UIEdgeInsets orig = sbc_orig_landscape_insets
         ? sbc_orig_landscape_insets(self, _cmd) : UIEdgeInsetsZero;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES) || sbc_config_kind(self) != SBC_CFG_ROOT)
+    if (!prefBool(p, @"enabled", NO) ||
+        !prefBool(p, @"homeSpacingEnabled", NO) ||
+        sbc_config_kind(self) != SBC_CFG_ROOT)
         return orig;
-    UIEdgeInsets insets = UIEdgeInsetsMake(orig.top + prefDouble(p, @"homeExTLandscape", 20.0),
-                                           orig.left + prefDouble(p, @"homeExLLandscape", 20.0),
-                                           orig.bottom + prefDouble(p, @"homeExBLandscape", 80.0),
-                                           orig.right + prefDouble(p, @"homeExRLandscape", 20.0));
+    UIEdgeInsets insets = UIEdgeInsetsMake(orig.top + prefDouble(p, @"homeExT", 0.0),
+                                           orig.left + prefDouble(p, @"homeExL", 0.0),
+                                           orig.bottom + prefDouble(p, @"homeExB", 0.0),
+                                           orig.right + prefDouble(p, @"homeExR", 0.0));
     return constrained_grid_insets(insets,
         clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8),
         clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8),
-        prefDouble(p, @"homeScaleLandscape", 0.98), YES);
+        prefDouble(p, @"homeScale", 1.0), YES);
 }
 
 static SBIconImageInfo sbc_landscape_icon_info(id self, SEL _cmd) {
     SBIconImageInfo orig = sbc_orig_landscape_icon_info
         ? sbc_orig_landscape_icon_info(self, _cmd) : (SBIconImageInfo){0};
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES) || sbc_config_kind(self) != SBC_CFG_ROOT)
+    if (!prefBool(p, @"enabled", NO) ||
+        !prefBool(p, @"homeScaleEnabled", NO) ||
+        sbc_config_kind(self) != SBC_CFG_ROOT)
         return orig;
-    double scale = prefDouble(p, @"homeScaleLandscape", 0.98);
-    return scale > 0.0 && scale <= 2.0 ? scaled_icon_image_info(orig, scale) : orig;
+    double scale = prefDouble(p, @"homeScale", 1.0);
+    return scale > 0.0 && scale <= 2.0 ? configured_icon_image_info(scale) : orig;
 }
 
 static void sbc_install_landscape_hooks(void) {
@@ -546,8 +639,8 @@ static void sbc_install_landscape_hooks(void) {
 - (SBCGridSize)gridSize {
     SBCGridSize grid = %orig;
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return grid;
-    if (!prefBool(p, @"restoreDockIcons", YES)) return grid;
+    if (!prefBool(p, @"enabled", NO)) return grid;
+    if (!prefBool(p, @"dockLayoutEnabled", NO)) return grid;
     int dockIcons = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
     if (grid.columns < dockIcons) grid.columns = (unsigned short)dockIcons;
     return grid;
@@ -578,36 +671,51 @@ static NSMutableSet *sbc_patched_set(void) {
 
 static void sbc_patch_root_config(id cfg) {
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return;
+    if (!prefBool(p, @"enabled", NO)) return;
 
     int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
     int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 4, 8);
     double exL = prefDouble(p, @"homeExL", 20.0), exR = prefDouble(p, @"homeExR", 20.0);
     double exT = prefDouble(p, @"homeExT", 40.0), exB = prefDouble(p, @"homeExB", 180.0);
+    double homeScale = prefDouble(p, @"homeScale", 0.98);
 
-    if ([cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)]) {
+    if (prefBool(p, @"homeGridEnabled", NO) &&
+        [cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)]) {
         [cfg setNumberOfPortraitColumns:(NSUInteger)hsCols];
         if ([cfg respondsToSelector:@selector(setNumberOfPortraitRows:)])
             [cfg setNumberOfPortraitRows:(NSUInteger)hsRows];
     }
-    if ([cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
+    if (prefBool(p, @"homeSpacingEnabled", NO) &&
+        [cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
         [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(60.0 + exT, 27.0 + exL,
                                                     100.0 + exB, 27.0 + exR)];
+    if (prefBool(p, @"homeScaleEnabled", NO) &&
+        homeScale > 0.0 && homeScale <= 2.0 &&
+        [cfg respondsToSelector:@selector(setIconImageInfo:)])
+        [cfg setIconImageInfo:configured_icon_image_info(homeScale)];
 }
 
 static void sbc_patch_dock_config(id dock) {
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return;
+    if (!prefBool(p, @"enabled", NO)) return;
 
     int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
     double dockExH   = prefDouble(p, @"dockExH", 30.0);
+    double dockScale = prefDouble(p, @"dockScale", 0.98);
 
     id cfg = dock_layout_config(dock);
-    if ([cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)])
+    if (prefBool(p, @"dockLayoutEnabled", NO) &&
+        [cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)])
         [cfg setNumberOfPortraitColumns:(NSUInteger)dockIcons];
-    if ([cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
+    if (prefBool(p, @"dockSpacingEnabled", NO) &&
+        [cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
         [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + dockExH,
                                                     0.0, 16.0 + dockExH)];
+    if (prefBool(p, @"dockScaleEnabled", NO) &&
+        dockScale > 0.0 && dockScale <= 2.0 &&
+        [cfg respondsToSelector:@selector(setIconImageInfo:)])
+        [cfg setIconImageInfo:configured_icon_image_info(dockScale)];
+    [dock setNeedsLayout];
 }
 
 %hook SBHIconManager
@@ -616,6 +724,15 @@ static void sbc_patch_dock_config(id dock) {
     id layout = [provider respondsToSelector:@selector(layoutForIconLocation:)]
                 ? [provider layoutForIconLocation:@"SBIconLocationRoot"] : nil;
     id cfg = [layout respondsToSelector:@selector(layoutConfiguration)] ? [layout layoutConfiguration] : nil;
+    // Establish object identity before any setter/getter can trigger the
+    // first layout pass. Previously this happened lazily from inside the
+    // getters, so the first pass used stock spacing and icon geometry.
+    if (cfg) sbc_root_cfg = cfg;
+    id dockLayout = [provider respondsToSelector:@selector(layoutForIconLocation:)]
+                    ? [provider layoutForIconLocation:@"SBIconLocationDock"] : nil;
+    id dockCfg = [dockLayout respondsToSelector:@selector(layoutConfiguration)]
+                 ? [dockLayout layoutConfiguration] : nil;
+    if (dockCfg) sbc_dock_cfg = dockCfg;
     if (cfg && ![sbc_patched_set() containsObject:cfg]) {
         [sbc_patched_set() addObject:cfg];
         sbc_patch_root_config(cfg);
@@ -628,6 +745,8 @@ static void sbc_patch_dock_config(id dock) {
 - (void)didMoveToWindow {
     %orig;
     if (!self.window) return;
+    id cfg = dock_layout_config(self);
+    if (cfg) sbc_dock_cfg = cfg;
     if ([sbc_patched_set() containsObject:self]) return;
     [sbc_patched_set() addObject:self];
     sbc_patch_dock_config(self);
@@ -664,7 +783,7 @@ static double sbc_pref_double_live(CFStringRef key, double def) {
 }
 
 static BOOL sbc_hide_app_library(void) {
-    BOOL hide = sbc_pref_bool_live(CFSTR("hideAppLibrary"), YES);
+    BOOL hide = sbc_pref_bool_live(CFSTR("hideAppLibrary"), NO);
     static BOOL logged = NO;
     if (!logged) { logged = YES; NSLog(@"[SBC:APPLIB] hideAppLibrary=%d", hide); }
     return hide;
@@ -706,6 +825,15 @@ static BOOL sbc_hide_app_library(void) {
 }
 - (BOOL)isAppLibraryAllowed {
     return sbc_hide_app_library() ? NO : %orig;
+}
+- (NSUInteger)maxIconCountForDock {
+    NSUInteger original = %orig;
+    NSDictionary *p = sbc_prefs();
+    if (!prefBool(p, @"enabled", NO) ||
+        !prefBool(p, @"dockLayoutEnabled", NO))
+        return original;
+    return MAX(original,
+               (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 4), 4, 7));
 }
 %end
 
@@ -767,6 +895,43 @@ static UITapGestureRecognizer *dtl_makeRecognizer(void) {
 @interface SBTHomeDoubleTapDelegate : NSObject <UIGestureRecognizerDelegate>
 @end
 
+@interface SBTLockDoubleTapDelegate : NSObject <UIGestureRecognizerDelegate>
+@end
+
+static BOOL sbt_view_contains_visible_passcode_ui(UIView *view) {
+    if (!view || view.hidden || view.alpha < 0.01) return NO;
+    NSString *name = NSStringFromClass([view class]);
+    if ([name localizedCaseInsensitiveContainsString:@"Passcode"] ||
+        [name localizedCaseInsensitiveContainsString:@"NumberPad"] ||
+        [name localizedCaseInsensitiveContainsString:@"Keypad"])
+        return YES;
+    for (UIView *subview in view.subviews) {
+        if (sbt_view_contains_visible_passcode_ui(subview)) return YES;
+    }
+    return NO;
+}
+
+@implementation SBTLockDoubleTapDelegate
+- (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
+       shouldReceiveTouch:(UITouch *)touch {
+    UIView *root = gestureRecognizer.view;
+    UIWindow *window = root.window;
+    // Reject the gesture everywhere while passcode authentication is on
+    // screen, including empty areas outside the keypad itself.
+    if (sbt_view_contains_visible_passcode_ui(window ?: root)) return NO;
+
+    for (UIView *view = touch.view; view && view != root; view = view.superview) {
+        if ([view isKindOfClass:[UIControl class]]) return NO;
+        NSString *name = NSStringFromClass([view class]);
+        if ([name localizedCaseInsensitiveContainsString:@"Passcode"] ||
+            [name localizedCaseInsensitiveContainsString:@"NumberPad"] ||
+            [name localizedCaseInsensitiveContainsString:@"Keypad"])
+            return NO;
+    }
+    return YES;
+}
+@end
+
 @implementation SBTHomeDoubleTapDelegate
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
@@ -796,6 +961,15 @@ static SBTHomeDoubleTapDelegate *sbt_home_double_tap_delegate(void) {
     return delegate;
 }
 
+static SBTLockDoubleTapDelegate *sbt_lock_double_tap_delegate(void) {
+    static SBTLockDoubleTapDelegate *delegate = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        delegate = [SBTLockDoubleTapDelegate new];
+    });
+    return delegate;
+}
+
 static void (*sbt_orig_root_did_move_to_window)(id, SEL) = NULL;
 
 static void sbt_root_did_move_to_window(id self, SEL _cmd) {
@@ -805,7 +979,7 @@ static void sbt_root_did_move_to_window(id self, SEL _cmd) {
     // Apply once when the real root view enters a window; persistent getter
     // hooks handle subsequent App Library queries without timer retries.
     if (sbc_hide_app_library()) sbc_poke_trailing(self);
-    if (!sbc_pref_bool_live(CFSTR("dtlHomeScreen"), YES)) return;
+    if (!sbc_pref_bool_live(CFSTR("dtlHomeScreen"), NO)) return;
     if (objc_getAssociatedObject(self, &kDTHomeGestureKey)) return;
 
     UITapGestureRecognizer *recognizer = dtl_makeRecognizer();
@@ -832,12 +1006,13 @@ static void sbt_install_home_double_tap_hook(void) {
     // SpringBoard (attaching a lock recognizer to each view — a likely
     // watchdog/hang source). Only proceed for actual cover sheet instances.
     if (![self isKindOfClass:%c(CSCoverSheetViewController)]) return;
-    if (!sbc_pref_bool_live(CFSTR("dtlLockScreen"), YES)) return;
+    if (!sbc_pref_bool_live(CFSTR("dtlLockScreen"), NO)) return;
     UIView *v = self.view;
     if (!v) return;
     if (objc_getAssociatedObject(v, &kDTLockGestureKey)) return;
 
     UITapGestureRecognizer *gr = dtl_makeRecognizer();
+    gr.delegate = sbt_lock_double_tap_delegate();
     [v addGestureRecognizer:gr];
     objc_setAssociatedObject(v, &kDTLockGestureKey, gr, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
 }
@@ -963,8 +1138,9 @@ static void override_drag_coefficient(double v)
 
 static void sbc_apply_drag_coefficient(void) {
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled", YES)) return;
-    double v = sbc_pref_double_live(CFSTR("dragCoefficient"), 0.25);
+    if (!prefBool(p, @"enabled", NO)) return;
+    if (!prefBool(p, @"dragCoefficientEnabled", NO)) return;
+    double v = sbc_pref_double_live(CFSTR("dragCoefficient"), 1.0);
     if (v < 0.01 || v > 2.0) return;
     if (fabs(v - 1.0) < 1e-9) return; // stock — leave the global untouched
     override_drag_coefficient(v);
@@ -1008,28 +1184,28 @@ static BOOL sbt_transition_is_wake = YES;
 
 - (double)backlightFadeDuration {
     if (sbt_transition_is_wake)
-        return sbc_pref_bool_live(CFSTR("noWakeAnim"), YES) ? 0 : %orig;
-    return sbc_pref_bool_live(CFSTR("noSleepFade"), YES) ? 0 : %orig;
+        return sbc_pref_bool_live(CFSTR("noWakeAnim"), NO) ? 0 : %orig;
+    return sbc_pref_bool_live(CFSTR("noSleepFade"), NO) ? 0 : %orig;
 }
 %end
 
 %hook SBFWakeAnimationSettings
 - (double)backlightFadeDuration {
     if (sbt_transition_is_wake)
-        return sbc_pref_bool_live(CFSTR("noWakeAnim"), YES) ? 0 : %orig;
-    return sbc_pref_bool_live(CFSTR("noSleepFade"), YES) ? 0 : %orig;
+        return sbc_pref_bool_live(CFSTR("noWakeAnim"), NO) ? 0 : %orig;
+    return sbc_pref_bool_live(CFSTR("noSleepFade"), NO) ? 0 : %orig;
 }
 - (double)speedMultiplierForWake {
-    return sbc_pref_bool_live(CFSTR("noWakeAnim"), YES) ? 1000 : %orig;
+    return sbc_pref_bool_live(CFSTR("noWakeAnim"), NO) ? 1000 : %orig;
 }
 - (double)speedMultiplierForLiftToWake {
-    return sbc_pref_bool_live(CFSTR("noWakeAnim"), YES) ? 1000 : %orig;
+    return sbc_pref_bool_live(CFSTR("noWakeAnim"), NO) ? 1000 : %orig;
 }
 %end
 
 %hook CSCoverSheetTransitionSettings
 - (void)setIconsFlyIn:(bool)arg1 {
-    %orig(sbc_pref_bool_live(CFSTR("noIconsFlyIn"), YES) ? NO : arg1);
+    %orig(sbc_pref_bool_live(CFSTR("noIconsFlyIn"), NO) ? NO : arg1);
 }
 %end
 
@@ -1047,7 +1223,7 @@ static inline double sbt_scaled_duration(double original) {
 
 %hook CATransaction
 + (void)setAnimationDuration:(double)arg1 {
-    if (sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), YES))
+    if (sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), NO))
         %orig(sbt_scaled_duration(arg1));
     else
         %orig(arg1);
@@ -1055,7 +1231,7 @@ static inline double sbt_scaled_duration(double original) {
 // FastAnimations parity: kill implicit animations inside apps entirely.
 // SpringBoard legitimately toggles disableActions itself, so pass through.
 + (void)setDisableActions:(BOOL)arg1 {
-    if (!sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), YES) || sbt_is_springboard)
+    if (!sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), NO) || sbt_is_springboard)
         %orig(arg1);
     else
         %orig(YES);
@@ -1068,15 +1244,333 @@ static inline double sbt_scaled_duration(double original) {
 // com.apple.UIKit).
 %hook UITextSelectionView
 - (void)showCalloutBarAfterDelay:(double)arg1 {
-    %orig(sbc_pref_bool_live(CFSTR("fastCopy"), YES) ? 0 : arg1);
+    %orig(sbc_pref_bool_live(CFSTR("fastCopy"), NO) ? 0 : arg1);
 }
 %end
+
+#if 0 // Removed: the Spotlight implementation is unreliable on iOS 15–17.
+// --------------------------------------- dismiss Spotlight after result tap
+//
+// Spotlight's concrete result controllers changed across iOS 15–17. Rather
+// than hard-linking one private class, observe result actions and dynamically
+// hook search-owned table/collection delegates as they are installed. All
+// hooks are gated by class/view names and preserve their original methods.
+
+static BOOL sbt_name_is_search_related(NSString *name) {
+    if (!name.length) return NO;
+    return [name containsString:@"SPUI"] ||
+           [name containsString:@"Spotlight"] ||
+           [name containsString:@"Search"];
+}
+
+static BOOL sbt_spotlight_query_needs_clear = NO;
+static BOOL sbt_spotlight_dismiss_pending = NO;
+
+static BOOL sbt_view_is_search_related(UIView *view) {
+    for (UIView *candidate = view; candidate; candidate = candidate.superview) {
+        if (sbt_name_is_search_related(NSStringFromClass([candidate class])))
+            return YES;
+    }
+    UIResponder *responder = view.nextResponder;
+    for (NSUInteger i = 0; responder && i < 12; i++, responder = responder.nextResponder) {
+        if (sbt_name_is_search_related(NSStringFromClass([responder class])))
+            return YES;
+    }
+    return NO;
+}
+
+static BOOL sbt_action_looks_like_search_result(SEL action, id target, UIView *sender) {
+    if (!sbt_view_is_search_related(sender)) return NO;
+    for (UIView *view = sender; view; view = view.superview) {
+        if ([NSStringFromClass([view class]) containsString:@"Result"]) return YES;
+    }
+    NSString *targetName = NSStringFromClass([target class]);
+    if ([targetName containsString:@"Result"]) return YES;
+    NSString *actionName = NSStringFromSelector(action).lowercaseString;
+    return [actionName containsString:@"result"] ||
+           [actionName containsString:@"select"] ||
+           [actionName containsString:@"open"] ||
+           [actionName containsString:@"launch"];
+}
+
+static void sbt_clear_search_text_in_view(UIView *view, BOOL searchContext) {
+    BOOL related = searchContext || sbt_name_is_search_related(NSStringFromClass([view class]));
+    if (related && [view isKindOfClass:[UISearchBar class]]) {
+        UISearchBar *bar = (UISearchBar *)view;
+        bar.text = @"";
+        [bar resignFirstResponder];
+    } else if (related && [view isKindOfClass:[UITextField class]]) {
+        UITextField *field = (UITextField *)view;
+        field.text = @"";
+        [field sendActionsForControlEvents:UIControlEventEditingChanged];
+        [field resignFirstResponder];
+    }
+    for (UIView *subview in view.subviews)
+        sbt_clear_search_text_in_view(subview, related);
+}
+
+static void sbt_invoke_search_dismiss_selector(id target, NSString *name) {
+    SEL selector = NSSelectorFromString(name);
+    if (!target || ![target respondsToSelector:selector]) return;
+    NSMethodSignature *signature = [target methodSignatureForSelector:selector];
+    if (!signature || signature.numberOfArguments > 3) return;
+    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+    invocation.target = target;
+    invocation.selector = selector;
+    if (signature.numberOfArguments == 3) {
+        BOOL animated = YES;
+        [invocation setArgument:&animated atIndex:2];
+    }
+    [invocation invoke];
+}
+
+static void sbt_invoke_bool_selector(id target, NSString *name, BOOL value) {
+    SEL selector = NSSelectorFromString(name);
+    if (!target || ![target respondsToSelector:selector]) return;
+    NSMethodSignature *signature = [target methodSignatureForSelector:selector];
+    if (!signature || signature.numberOfArguments != 3) return;
+    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
+    invocation.target = target;
+    invocation.selector = selector;
+    [invocation setArgument:&value atIndex:2];
+    [invocation invoke];
+}
+
+static void sbt_dismiss_search_controller_in_view(UIView *view, BOOL searchContext) {
+    BOOL related = searchContext || sbt_name_is_search_related(NSStringFromClass([view class]));
+    if (related) {
+        UIResponder *responder = view.nextResponder;
+        if ([responder isKindOfClass:[UIViewController class]]) {
+            UIViewController *controller = (UIViewController *)responder;
+            sbt_invoke_search_dismiss_selector(controller, @"dismissSearchView");
+            sbt_invoke_search_dismiss_selector(controller, @"dismissAnimated:");
+            if (controller.presentingViewController)
+                [controller dismissViewControllerAnimated:YES completion:nil];
+        }
+    }
+    for (UIView *subview in view.subviews)
+        sbt_dismiss_search_controller_in_view(subview, related);
+}
+
+static void sbt_clear_and_dismiss_spotlight(void) {
+    if (!sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"), NO)) return;
+
+    UIApplication *application = [UIApplication sharedApplication];
+    for (UIScene *scene in application.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
+            sbt_clear_search_text_in_view(window, NO);
+            sbt_dismiss_search_controller_in_view(window, NO);
+        }
+    }
+
+    NSArray<NSString *> *classNames = @[@"SBSearchViewController",
+                                         @"SBSearchController",
+                                         @"SBSpotlightController",
+                                         @"SPUISearchViewController"];
+    NSArray<NSString *> *sharedSelectors = @[@"sharedInstance",
+                                              @"sharedController"];
+    NSArray<NSString *> *dismissSelectors = @[@"dismissSearchView",
+                                               @"dismissSearchViewAnimated:",
+                                               @"dismissAnimated:",
+                                               @"hideSearch"];
+    for (NSString *className in classNames) {
+        Class cls = objc_getClass(className.UTF8String);
+        if (!cls) continue;
+        id target = nil;
+        for (NSString *sharedName in sharedSelectors) {
+            SEL shared = NSSelectorFromString(sharedName);
+            if ([cls respondsToSelector:shared]) {
+                target = ((id (*)(id, SEL))objc_msgSend)(cls, shared);
+                break;
+            }
+        }
+        if (!target && [className isEqualToString:@"SPUISearchViewController"])
+            continue;
+        // SBSearchViewController is the SpringBoard owner on iOS 15–17.
+        // Its public-to-SpringBoard visibility property is the reliable
+        // dismissal path; the other selectors cover version-specific owners.
+        sbt_invoke_bool_selector(target, @"setVisible:", NO);
+        for (NSString *dismissName in dismissSelectors)
+            sbt_invoke_search_dismiss_selector(target, dismissName);
+    }
+}
+
+static void sbt_clear_spotlight_query_if_needed(void) {
+    if (!sbt_spotlight_query_needs_clear) return;
+    UIApplication *application = [UIApplication sharedApplication];
+    for (UIScene *scene in application.connectedScenes) {
+        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
+        for (UIWindow *window in ((UIWindowScene *)scene).windows)
+            sbt_clear_search_text_in_view(window, NO);
+    }
+    // Keep the flag until a search-owned text input is actually cleared.
+    // iPadOS 15 may retain the controller and restore its query after dismiss.
+}
+
+static void sbt_spotlight_result_will_be_selected(void) {
+    sbt_spotlight_query_needs_clear = YES;
+    // App launches can preserve the underlying Spotlight presentation even
+    // after an early setVisible:NO. Keep this pending until SpringBoard is
+    // active again so returning Home cannot reveal the old search screen.
+    sbt_spotlight_dismiss_pending = YES;
+    // This must happen before SpringBoard handles the result action. Once the
+    // original callback starts the app-launch transition, Spotlight's page is
+    // retained underneath the app and changing only the controller's visible
+    // flag is too late to affect the state restored on return to Home.
+    sbt_clear_and_dismiss_spotlight();
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        sbt_clear_and_dismiss_spotlight();
+    });
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        sbt_clear_spotlight_query_if_needed();
+    });
+}
+
+static NSMutableDictionary<NSString *, NSValue *> *sbt_search_originals(void) {
+    static NSMutableDictionary *originals = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{ originals = [NSMutableDictionary new]; });
+    return originals;
+}
+
+static NSString *sbt_search_hook_key(Class cls, SEL selector) {
+    return [NSString stringWithFormat:@"%p:%@", cls, NSStringFromSelector(selector)];
+}
+
+static IMP sbt_search_original_for_object(id object, SEL selector) {
+    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
+        NSValue *value = sbt_search_originals()[sbt_search_hook_key(cls, selector)];
+        if (value) return [value pointerValue];
+    }
+    return NULL;
+}
+
+static void sbt_search_collection_selected(id self, SEL _cmd, id collectionView,
+                                           NSIndexPath *indexPath) {
+    sbt_spotlight_result_will_be_selected();
+    IMP original = sbt_search_original_for_object(self, _cmd);
+    if (original) ((void (*)(id, SEL, id, NSIndexPath *))original)(self, _cmd,
+                                                                   collectionView, indexPath);
+}
+
+static void sbt_hook_search_delegate(id delegate, SEL selector, IMP replacement) {
+    if (!delegate || !sbt_name_is_search_related(NSStringFromClass([delegate class]))) return;
+    Class cls = object_getClass(delegate);
+    NSString *key = sbt_search_hook_key(cls, selector);
+    if (sbt_search_originals()[key]) return;
+    Method method = class_getInstanceMethod(cls, selector);
+    if (!method) return;
+
+    // Materialize inherited implementations on the concrete search delegate
+    // before hooking, so unrelated UIKit delegates are never affected.
+    class_addMethod(cls, selector, method_getImplementation(method),
+                    method_getTypeEncoding(method));
+    IMP original = NULL;
+    MSHookMessageEx(cls, selector, replacement, &original);
+    if (original) sbt_search_originals()[key] = [NSValue valueWithPointer:original];
+}
+
+%hook UICollectionView
+- (void)setDelegate:(id)delegate {
+    %orig;
+    sbt_hook_search_delegate(delegate,
+        @selector(collectionView:didSelectItemAtIndexPath:),
+        (IMP)sbt_search_collection_selected);
+}
+%end
+
+%hook UITableView
+- (void)setDelegate:(id)delegate {
+    %orig;
+    sbt_hook_search_delegate(delegate,
+        @selector(tableView:didSelectRowAtIndexPath:),
+        (IMP)sbt_search_collection_selected);
+}
+%end
+
+%hook UIApplication
+- (BOOL)sendAction:(SEL)action to:(id)target from:(id)sender forEvent:(UIEvent *)event {
+    BOOL searchResult = sbt_is_springboard &&
+        [sender isKindOfClass:[UIView class]] &&
+        sbt_action_looks_like_search_result(action, target, sender);
+    if (searchResult) sbt_spotlight_result_will_be_selected();
+    BOOL result = %orig;
+    return result;
+}
+%end
+
+%hook UITextField
+- (BOOL)becomeFirstResponder {
+    BOOL result = %orig;
+    if (result && sbt_spotlight_query_needs_clear && sbt_view_is_search_related(self)) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            self.text = @"";
+            [self sendActionsForControlEvents:UIControlEventEditingChanged];
+            sbt_spotlight_query_needs_clear = NO;
+        });
+    }
+    return result;
+}
+%end
+
+static void (*sbt_orig_search_set_visible)(id, SEL, BOOL) = NULL;
+
+static void sbt_search_set_visible(id self, SEL _cmd, BOOL visible) {
+    if (sbt_orig_search_set_visible)
+        sbt_orig_search_set_visible(self, _cmd, visible);
+    if (visible && sbt_spotlight_query_needs_clear) {
+        dispatch_async(dispatch_get_main_queue(), ^{
+            sbt_clear_spotlight_query_if_needed();
+        });
+    }
+}
+
+static void sbt_install_search_visibility_hook(void) {
+    Class cls = objc_getClass("SBSearchViewController");
+    SEL selector = @selector(setVisible:);
+    if (!cls || !class_getInstanceMethod(cls, selector)) return;
+    MSHookMessageEx(cls, selector, (IMP)sbt_search_set_visible,
+                    (IMP *)&sbt_orig_search_set_visible);
+}
+
+// A result-launched app can retain Spotlight as the SpringBoard scene beneath
+// it even when the search controller has been told to hide. Consume the
+// one-shot flag only on an actual Home return. After the normal app-minimize
+// transaction completes, a menu click makes SpringBoard leave its retained
+// search presentation exactly as if Home had been pressed while Spotlight was
+// visible. This deliberately does not run for app-switcher transitions.
+%hook SBUIController
+- (BOOL)handleHomeButtonSinglePressUp {
+    BOOL shouldReturnToIcons = sbt_is_springboard &&
+        sbt_spotlight_dismiss_pending &&
+        sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"), NO);
+    if (shouldReturnToIcons)
+        sbt_clear_and_dismiss_spotlight();
+
+    BOOL result = %orig;
+    if (shouldReturnToIcons) {
+        sbt_spotlight_dismiss_pending = NO;
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
+                                     (int64_t)(0.35 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            [[%c(SBUIController) sharedInstance] clickedMenuButton];
+            sbt_clear_and_dismiss_spotlight();
+        });
+    }
+    return result;
+}
+%end
+
+#endif
 
 // ------------------------------------------------------------------ entry
 
 static void sbc_apply(void) {
     NSDictionary *p = sbc_reload_prefs(); // refresh the cache used by the configuration getter hooks
-    if (!prefBool(p, @"enabled", YES)) { NSLog(@"[SBC] disabled"); return; }
+    if (!prefBool(p, @"enabled", NO)) { NSLog(@"[SBC] disabled"); return; }
 
     int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
     int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
@@ -1099,19 +1593,25 @@ static void sbc_apply(void) {
     if (!iconCtrl) { NSLog(@"[SBC] SBIconController missing"); return; }
     id mgr = [iconCtrl iconManager];
 
-    patch_dock(iconCtrl, mgr, dockIcons);
+    if (prefBool(p, @"dockLayoutEnabled", NO))
+        patch_dock(iconCtrl, mgr, dockIcons);
 
     id cfg = root_layout_config(iconCtrl, mgr);
-    if (cfg) patch_homescreen_grid(iconCtrl, mgr, cfg, hsCols, hsRows);
-    else NSLog(@"[SBC] root layoutConfiguration nil");
+    if (cfg && prefBool(p, @"homeGridEnabled", NO))
+        patch_homescreen_grid(iconCtrl, mgr, cfg, hsCols, hsRows);
+    else if (!cfg) NSLog(@"[SBC] root layoutConfiguration nil");
 
     id dock = dock_list_view(iconCtrl, mgr);
     id dockCfg = dock_layout_config(dock);
 
-    apply_home_spacing(cfg, homeExL, homeExR, homeExT, homeExB);
-    apply_dock_spacing(dockCfg, dockExH);
-    if (homeScale > 0.0) apply_home_scale(mgr, cfg, homeScale);
-    if (dockScale > 0.0) apply_dock_scale(dock, dockCfg, dockScale);
+    if (prefBool(p, @"homeSpacingEnabled", NO))
+        apply_home_spacing(cfg, homeExL, homeExR, homeExT, homeExB);
+    if (prefBool(p, @"dockSpacingEnabled", NO))
+        apply_dock_spacing(dockCfg, dockExH);
+    if (prefBool(p, @"homeScaleEnabled", NO) && homeScale > 0.0)
+        apply_home_scale(mgr, cfg, homeScale);
+    if (prefBool(p, @"dockScaleEnabled", NO) && dockScale > 0.0)
+        apply_dock_scale(dock, dockCfg, dockScale);
 
     sbc_apply_drag_coefficient();
 
@@ -1130,15 +1630,23 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
 %hook SpringBoard
 - (void)applicationDidFinishLaunching:(id)application {
     %orig;
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3 * NSEC_PER_SEC)),
+    // SBIconController and its manager are available after SpringBoard's
+    // original launch method returns. Apply before the first rendered frame
+    // instead of visibly correcting the layout three seconds later.
+    sbc_apply();
+    sbc_apply_drag_coefficient();
+    // Restore before autosave gets any chance to replace the preserved
+    // snapshot with SpringBoard's post-rejailbreak fallback arrangement.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        sbc_apply();
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        sbc_apply_drag_coefficient();
+        if (sbt_icon_restore_guard) sbt_restore_icon_layout();
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            sbt_icon_restore_guard = NO;
+        });
     });
 }
+
 %end
 
 // Single source of truth: these defaults are written into the settings plist
@@ -1151,9 +1659,8 @@ static NSDictionary *sbc_default_values(void) {
     return SBTDefaultValues();
 }
 
-// Bump kSBTDefaultsVersion to force every install onto the defaults once
-// (e.g. after shipping a bad default). Existing user values are otherwise
-// never touched.
+// The version records the defaults schema only. Upgrades seed newly added
+// keys but never overwrite a user's existing choices.
 #define kSBTDefaultsVersion SBTDefaultsVersion
 
 static void sbc_seed_defaults(void) {
@@ -1165,7 +1672,12 @@ static void sbc_seed_defaults(void) {
 
     for (NSString *key in defs) {
         CFTypeRef existing = CFPreferencesCopyAppValue((__bridge CFStringRef)key, kPrefsDomain);
-        if (force || !existing) {
+        BOOL invalidLegacyGridValue = [@[@"dockIcons", @"hsCols", @"hsRows",
+                                         @"hsColsLandscape", @"hsRowsLandscape"]
+                                       containsObject:key] &&
+                                      existing &&
+                                      [(__bridge NSNumber *)existing integerValue] <= 0;
+        if (!existing || invalidLegacyGridValue) {
             CFPreferencesSetAppValue((__bridge CFStringRef)key,
                                      (__bridge CFPropertyListRef)defs[key], kPrefsDomain);
         }
@@ -1204,6 +1716,9 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
     sbc_install_landscape_hooks();
     sbt_install_home_double_tap_hook();
     sbc_seed_defaults();
+    sbt_icon_restore_guard =
+        sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"), NO) &&
+        [[NSFileManager defaultManager] fileExistsAtPath:sbt_icon_layout_backup_path()];
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL, sbc_apply_notification,
                                     kApplyNotification, NULL,

@@ -15,7 +15,12 @@ static void sbc_seed_defaults(void) {
 
     for (NSString *key in defs) {
         CFTypeRef existing = CFPreferencesCopyAppValue((__bridge CFStringRef)key, kPrefsDomain);
-        if (force || !existing) {
+        BOOL invalidLegacyGridValue = [@[@"dockIcons", @"hsCols", @"hsRows",
+                                         @"hsColsLandscape", @"hsRowsLandscape"]
+                                       containsObject:key] &&
+                                      existing &&
+                                      [(__bridge NSNumber *)existing integerValue] <= 0;
+        if (!existing || invalidLegacyGridValue) {
             CFPreferencesSetAppValue((__bridge CFStringRef)key,
                                      (__bridge CFPropertyListRef)defs[key], kPrefsDomain);
         }
@@ -36,6 +41,12 @@ static void sbc_post_notification(CFStringRef name) {
 @end
 
 @implementation SBTRootListController
+
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
+    [super setPreferenceValue:value specifier:specifier];
+    CFPreferencesAppSynchronize(kPrefsDomain);
+    [self apply];
+}
 
 - (NSArray *)specifiers {
     if (!_specifiers) {

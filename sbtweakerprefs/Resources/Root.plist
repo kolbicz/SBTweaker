@@ -20,7 +20,7 @@
 			<key>label</key>
 			<string>Enabled</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -28,7 +28,14 @@
 			<key>label</key>
 			<string>Dock</string>
 			<key>footerText</key>
-			<string>Restore Dock Icons keeps the extra dock icon(s) in place across resprings and icon-state validation.</string>
+			<string>Customize the Dock from 4 to 7 icons. Capacity and layout update together so newly enabled slots can be filled without a respring.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>dockLayoutEnabled</string>
+			<key>label</key><string>Customize Dock Count</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -44,21 +51,21 @@
 			<key>max</key>
 			<integer>7</integer>
 			<key>default</key>
-			<integer>5</integer>
+			<integer>4</integer>
 			<key>isInteger</key>
 			<true/>
 		</dict>
 		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>cz.kolbi.sbtweaker</string>
-			<key>key</key>
-			<string>restoreDockIcons</string>
-			<key>label</key>
-			<string>Restore Dock Icons</string>
-			<key>default</key>
-			<true/>
+			<key>cell</key><string>PSGroupCell</string>
+			<key>label</key><string>Icon Layout Backup</string>
+			<key>footerText</key><string>When enabled, SBTweaker restores the saved Home Screen and Dock layout after SpringBoard starts. SpringBoard's native icon-state saves automatically refresh the backup while jailbroken.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>iconLayoutBackupEnabled</string>
+			<key>label</key><string>Save &amp; Restore Icon Layout</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -67,6 +74,13 @@
 			<string>Home Screen Grid</string>
 			<key>footerText</key>
 			<string>Landscape Columns and Rows only affect rotating Home Screens (iPad). The defaults match the previous automatic layout.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeGridEnabled</string>
+			<key>label</key><string>Customize Grid Layout</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -82,7 +96,7 @@
 			<key>max</key>
 			<integer>8</integer>
 			<key>default</key>
-			<integer>5</integer>
+			<integer>4</integer>
 			<key>isInteger</key>
 			<true/>
 		</dict>
@@ -144,52 +158,16 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>Landscape Layout</string>
-			<key>footerText</key>
-			<string>Applied only on rotating Home Screens when the installed SpringBoard version exposes separate landscape geometry.</string>
-		</dict>
-		<dict>
-			<key>cellClass</key><string>SBTNumberCell</string>
-			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
-			<key>key</key><string>homeExLLandscape</string>
-			<key>label</key><string>Extra Left</string>
-			<key>min</key><real>-20</real><key>max</key><real>60</real><key>default</key><real>20</real>
-		</dict>
-		<dict>
-			<key>cellClass</key><string>SBTNumberCell</string>
-			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
-			<key>key</key><string>homeExRLandscape</string>
-			<key>label</key><string>Extra Right</string>
-			<key>min</key><real>-20</real><key>max</key><real>60</real><key>default</key><real>20</real>
-		</dict>
-		<dict>
-			<key>cellClass</key><string>SBTNumberCell</string>
-			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
-			<key>key</key><string>homeExTLandscape</string>
-			<key>label</key><string>Extra Top</string>
-			<key>min</key><real>-20</real><key>max</key><real>60</real><key>default</key><real>20</real>
-		</dict>
-		<dict>
-			<key>cellClass</key><string>SBTNumberCell</string>
-			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
-			<key>key</key><string>homeExBLandscape</string>
-			<key>label</key><string>Extra Bottom</string>
-			<key>min</key><real>-20</real><key>max</key><real>200</real><key>default</key><real>80</real>
-		</dict>
-		<dict>
-			<key>cellClass</key><string>SBTNumberCell</string>
-			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
-			<key>key</key><string>homeScaleLandscape</string>
-			<key>label</key><string>Icon Scale</string>
-			<key>min</key><real>0.5</real><key>max</key><real>1.5</real><key>default</key><real>0.98</real>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
 			<string>Home Screen Spacing</string>
 			<key>footerText</key>
-			<string>Extra padding (points) added to the default home screen insets. Negative values pull icons toward the edges.</string>
+			<string>Extra padding applied in portrait and landscape. Negative values pull icons toward the edges.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeSpacingEnabled</string>
+			<key>label</key><string>Customize Icon Spacing</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -205,7 +183,7 @@
 			<key>max</key>
 			<real>60</real>
 			<key>default</key>
-			<real>20</real>
+			<real>0</real>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -221,7 +199,7 @@
 			<key>max</key>
 			<real>60</real>
 			<key>default</key>
-			<real>20</real>
+			<real>0</real>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -237,7 +215,7 @@
 			<key>max</key>
 			<real>60</real>
 			<key>default</key>
-			<real>40</real>
+			<real>0</real>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -253,13 +231,20 @@
 			<key>max</key>
 			<real>200</real>
 			<key>default</key>
-			<real>180</real>
+			<real>0</real>
 		</dict>
 		<dict>
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
 			<string>Dock Spacing</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>dockSpacingEnabled</string>
+			<key>label</key><string>Customize Dock Spacing</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -275,7 +260,7 @@
 			<key>max</key>
 			<real>40</real>
 			<key>default</key>
-			<real>30</real>
+			<real>0</real>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -283,7 +268,14 @@
 			<key>label</key>
 			<string>Icon Scale</string>
 			<key>footerText</key>
-			<string>1.0 is the default icon size (60pt).</string>
+			<string>1.0 is the default icon size (60pt). Home icon scale applies in portrait and landscape.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>homeScaleEnabled</string>
+			<key>label</key><string>Customize Home Icon Scale</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -299,7 +291,14 @@
 			<key>max</key>
 			<real>1.5</real>
 			<key>default</key>
-			<real>0.98</real>
+			<real>1</real>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>dockScaleEnabled</string>
+			<key>label</key><string>Customize Dock Icon Scale</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -315,7 +314,7 @@
 			<key>max</key>
 			<real>1.5</real>
 			<key>default</key>
-			<real>0.98</real>
+			<real>1</real>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -335,7 +334,7 @@
 			<key>label</key>
 			<string>Hide App Library</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -344,6 +343,13 @@
 			<string>Animations</string>
 			<key>footerText</key>
 			<string>UIAnimationDragCoefficient — lower is faster. 1.0 is stock and leaves the system value untouched; a respring then restores stock behavior. Disable Wake Animation affects turning the screen on, Disable Screen Off Fade affects turning it off. Faster Core Animation and Fast Copy also apply inside apps and take effect immediately.</string>
+		</dict>
+		<dict>
+			<key>cell</key><string>PSSwitchCell</string>
+			<key>defaults</key><string>cz.kolbi.sbtweaker</string>
+			<key>key</key><string>dragCoefficientEnabled</string>
+			<key>label</key><string>Customize Drag Coefficient</string>
+			<key>default</key><false/>
 		</dict>
 		<dict>
 			<key>cellClass</key>
@@ -359,7 +365,7 @@
 			<key>max</key>
 			<real>2.00</real>
 			<key>default</key>
-			<real>0.25</real>
+			<real>1</real>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -371,7 +377,7 @@
 			<key>label</key>
 			<string>Disable Wake Animation</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -383,7 +389,7 @@
 			<key>label</key>
 			<string>Disable Screen Off Fade</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -395,7 +401,7 @@
 			<key>label</key>
 			<string>Disable Unlock Icon Fly-In</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -407,7 +413,7 @@
 			<key>label</key>
 			<string>Faster Core Animation</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -419,7 +425,7 @@
 			<key>label</key>
 			<string>Fast Copy</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -439,7 +445,7 @@
 			<key>label</key>
 			<string>Home Screen</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -451,7 +457,7 @@
 			<key>label</key>
 			<string>Lock Screen</string>
 			<key>default</key>
-			<true/>
+			<false/>
 		</dict>
 		<dict>
 			<key>cell</key>
