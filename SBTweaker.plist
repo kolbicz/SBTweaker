@@ -1,7 +1,9 @@
 {
 	Filter = {
-		Classes = (
-			"UIApplication"
+		Bundles = (
+			"com.apple.springboard",
+			"com.apple.UIKit",
+			"com.apple.UIKitCore"
 		);
 	};
 }

@@ -7,9 +7,9 @@ These are in-process Substrate-hook reimplementations of my
 
 ## Features
 
-- **Dock**: configurable icon count (4–7), including live capacity updates
+- **Dock**: configurable icon count (4–8), including live capacity updates
   so newly enabled slots can be filled without a respring
-- **Home Screen grid**: configurable columns (3–8) and rows (4–8), set
+- **Home Screen grid**: configurable columns and rows (1–10), set
   independently for portrait and landscape (landscape only affects rotating
   Home Screens, i.e. iPad)
 - **Spacing**: independent portrait and landscape Home Screen insets, plus dock
@@ -35,6 +35,17 @@ All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
 
+## Version 1.3.2
+
+- Fixed SpringBoard hanging during respring on iOS/iPadOS 15 by removing
+  synchronous preference writes and migration from early SpringBoard startup.
+- Replaced class-based injection with explicit SpringBoard, UIKit and UIKitCore
+  bundle filters for compatibility across iOS 15–17.
+- Expanded Home Screen grid rows and columns to 1–10.
+- Expanded Dock capacity to 8 icons.
+- Expanded left/right spacing to 160, top spacing to 200 and bottom spacing to
+  400 in portrait and landscape.
+
 ## Version 1.3.1
 
 - Moved Home Screen grid and spacing controls into one dedicated submenu.
@@ -47,7 +58,7 @@ apply live, and a respring button is included for changes that need one.
 ## Version 1.3
 
 - Added independent, off-by-default gates for every layout or animation value.
-- Added live Dock capacity updates for 4–7 icons without requiring a respring.
+- Added live Dock capacity updates without requiring a respring.
 - Added device-aware stock grid defaults and non-destructive preference
   migrations that preserve existing settings.
 - Unified Home Screen spacing and scaling across portrait and landscape while

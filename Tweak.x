@@ -16,7 +16,7 @@
 //  - darksword disable_app_library(): hide App Library
 //  - darksword_tweaks.m double-tap-to-lock: home & lock screen gestures
 //  - FastAnimations: core animation clamp & Fast Copy callout (these two
-//    also load into every application process containing UIApplication)
+//    also load into UIKit and UIKitCore application processes)
 //
 // Icon arrangement and add-to-dock from the original sbcustomizer.m were
 // dropped.
@@ -479,7 +479,7 @@ static int sbc_config_kind(id cfg) {
     if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
     if (!prefBool(p, @"homeGridEnabled", NO)) return orig;
-    return (NSUInteger)clampi((int)prefInt(p, @"hsRows", 6), 4, 8);
+    return (NSUInteger)clampi((int)prefInt(p, @"hsRows", 6), 1, 10);
 }
 
 - (NSUInteger)numberOfPortraitColumns {
@@ -502,9 +502,9 @@ static int sbc_config_kind(id cfg) {
         kind = SBC_CFG_DOCK;
     }
     if (kind == SBC_CFG_DOCK && prefBool(p, @"dockLayoutEnabled", NO))
-        return (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
+        return (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
     if (kind == SBC_CFG_ROOT && prefBool(p, @"homeGridEnabled", NO))
-        return (NSUInteger)clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
+        return (NSUInteger)clampi((int)prefInt(p, @"hsCols", 5), 1, 10);
     return orig;
 }
 
@@ -525,8 +525,8 @@ static int sbc_config_kind(id cfg) {
                                                100.0 + prefDouble(p, @"homeExB", 180.0),
                                                27.0 + prefDouble(p, @"homeExR", 20.0));
         return constrained_grid_insets(insets,
-            clampi((int)prefInt(p, @"hsCols", 5), 3, 8),
-            clampi((int)prefInt(p, @"hsRows", 6), 4, 8),
+            clampi((int)prefInt(p, @"hsCols", 5), 1, 10),
+            clampi((int)prefInt(p, @"hsRows", 6), 1, 10),
             prefDouble(p, @"homeScale", 0.98), NO);
     }
     return orig;
@@ -563,7 +563,7 @@ static NSUInteger sbc_landscape_rows(id self, SEL _cmd) {
     if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
     if (!prefBool(p, @"homeGridLandscapeEnabled", NO)) return orig;
-    return (NSUInteger)clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8);
+    return (NSUInteger)clampi((int)prefInt(p, @"hsRowsLandscape", 5), 1, 10);
 }
 
 static NSUInteger sbc_landscape_columns(id self, SEL _cmd) {
@@ -573,7 +573,7 @@ static NSUInteger sbc_landscape_columns(id self, SEL _cmd) {
     if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
     if (!prefBool(p, @"homeGridLandscapeEnabled", NO)) return orig;
-    return (NSUInteger)clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8);
+    return (NSUInteger)clampi((int)prefInt(p, @"hsColsLandscape", 6), 1, 10);
 }
 
 static UIEdgeInsets sbc_landscape_insets(id self, SEL _cmd) {
@@ -589,8 +589,8 @@ static UIEdgeInsets sbc_landscape_insets(id self, SEL _cmd) {
                                            orig.bottom + prefDouble(p, @"homeExBLandscape", 0.0),
                                            orig.right + prefDouble(p, @"homeExRLandscape", 0.0));
     return constrained_grid_insets(insets,
-        clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8),
-        clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8),
+        clampi((int)prefInt(p, @"hsColsLandscape", 6), 1, 10),
+        clampi((int)prefInt(p, @"hsRowsLandscape", 5), 1, 10),
         prefDouble(p, @"homeScale", 1.0), YES);
 }
 
@@ -641,7 +641,7 @@ static void sbc_install_landscape_hooks(void) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO)) return grid;
     if (!prefBool(p, @"dockLayoutEnabled", NO)) return grid;
-    int dockIcons = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
+    int dockIcons = clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
     if (grid.columns < dockIcons) grid.columns = (unsigned short)dockIcons;
     return grid;
 }
@@ -673,8 +673,8 @@ static void sbc_patch_root_config(id cfg) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO)) return;
 
-    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
-    int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 4, 8);
+    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 1, 10);
+    int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 1, 10);
     double exL = prefDouble(p, @"homeExL", 20.0), exR = prefDouble(p, @"homeExR", 20.0);
     double exT = prefDouble(p, @"homeExT", 40.0), exB = prefDouble(p, @"homeExB", 180.0);
     double homeScale = prefDouble(p, @"homeScale", 0.98);
@@ -699,7 +699,7 @@ static void sbc_patch_dock_config(id dock) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO)) return;
 
-    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
+    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
     double dockExH   = prefDouble(p, @"dockExH", 30.0);
     double dockScale = prefDouble(p, @"dockScale", 0.98);
 
@@ -833,7 +833,7 @@ static BOOL sbc_hide_app_library(void) {
         !prefBool(p, @"dockLayoutEnabled", NO))
         return original;
     return MAX(original,
-               (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 4), 4, 7));
+               (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 4), 4, 8));
 }
 %end
 
@@ -1240,7 +1240,7 @@ static inline double sbt_scaled_duration(double original) {
 
 // Fast Copy: show the copy/paste callout bar immediately instead of after
 // UIKit's built-in delay. Inspired by the classic Fast Copy tweak. Fires in
-// every app, not just SpringBoard (the substrate filter matches UIApplication).
+// every app, not just SpringBoard (the substrate filter matches UIKit/UIKitCore).
 %hook UITextSelectionView
 - (void)showCalloutBarAfterDelay:(double)arg1 {
     %orig(sbc_pref_bool_live(CFSTR("fastCopy"), NO) ? 0 : arg1);
@@ -1571,11 +1571,11 @@ static void sbc_apply(void) {
     NSDictionary *p = sbc_reload_prefs(); // refresh the cache used by the configuration getter hooks
     if (!prefBool(p, @"enabled", NO)) { NSLog(@"[SBC] disabled"); return; }
 
-    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 7);
-    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 3, 8);
-    int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 4, 8);
-    int hsColsL      = clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8);
-    int hsRowsL      = clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8);
+    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
+    int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 1, 10);
+    int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 1, 10);
+    int hsColsL      = clampi((int)prefInt(p, @"hsColsLandscape", 6), 1, 10);
+    int hsRowsL      = clampi((int)prefInt(p, @"hsRowsLandscape", 5), 1, 10);
     double homeExL   = prefDouble(p, @"homeExL", 20.0);
     double homeExR   = prefDouble(p, @"homeExR", 20.0);
     double homeExT   = prefDouble(p, @"homeExT", 40.0);
@@ -1648,67 +1648,6 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
 
 %end
 
-// Single source of truth: these defaults are written into the settings plist
-// for any key that has no stored value yet, at SpringBoard start (and also by
-// the settings pane when it opens). Everything then reads them through
-// CFPreferences — the literal fallbacks in the pref helpers are only a last
-// resort if a key is missing entirely. Existing user values are never
-// overwritten.
-static NSDictionary *sbc_default_values(void) {
-    return SBTDefaultValues();
-}
-
-// The version records the defaults schema only. Upgrades seed newly added
-// keys but never overwrite a user's existing choices.
-#define kSBTDefaultsVersion SBTDefaultsVersion
-
-static void sbc_seed_defaults(void) {
-    NSDictionary *defs = sbc_default_values();
-    CFPreferencesAppSynchronize(kPrefsDomain);
-
-    NSNumber *stored = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("defaultsVersion"), kPrefsDomain));
-    BOOL force = !stored || [stored integerValue] < kSBTDefaultsVersion;
-
-    // Before v11 the portrait switches also controlled landscape. Inherit
-    // that state once so an upgrade does not silently alter an active layout.
-    if (stored && [stored integerValue] < 11) {
-        NSDictionary *migrations = @{
-            @"homeGridLandscapeEnabled": @"homeGridEnabled",
-            @"homeSpacingLandscapeEnabled": @"homeSpacingEnabled",
-        };
-        for (NSString *newKey in migrations) {
-            CFTypeRef newValue = CFPreferencesCopyAppValue((__bridge CFStringRef)newKey, kPrefsDomain);
-            if (!newValue) {
-                CFTypeRef oldValue = CFPreferencesCopyAppValue(
-                    (__bridge CFStringRef)migrations[newKey], kPrefsDomain);
-                if (oldValue) {
-                    CFPreferencesSetAppValue((__bridge CFStringRef)newKey, oldValue, kPrefsDomain);
-                    CFRelease(oldValue);
-                }
-            }
-            if (newValue) CFRelease(newValue);
-        }
-    }
-
-    for (NSString *key in defs) {
-        CFTypeRef existing = CFPreferencesCopyAppValue((__bridge CFStringRef)key, kPrefsDomain);
-        BOOL invalidLegacyGridValue = [@[@"dockIcons", @"hsCols", @"hsRows",
-                                         @"hsColsLandscape", @"hsRowsLandscape"]
-                                       containsObject:key] &&
-                                      existing &&
-                                      [(__bridge NSNumber *)existing integerValue] <= 0;
-        if (!existing || invalidLegacyGridValue) {
-            CFPreferencesSetAppValue((__bridge CFStringRef)key,
-                                     (__bridge CFPropertyListRef)defs[key], kPrefsDomain);
-        }
-        if (existing) CFRelease(existing);
-    }
-    if (force) {
-        CFPreferencesSetAppValue(CFSTR("defaultsVersion"), (__bridge CFPropertyListRef)@(kSBTDefaultsVersion), kPrefsDomain);
-    }
-    CFPreferencesAppSynchronize(kPrefsDomain);
-}
-
 // Respring relay: the Settings pane is not allowed to relaunch SpringBoard on
 // rootless/roothide, so it posts this notification and we do it from inside
 // SpringBoard, where exitAndRelaunch: works.
@@ -1725,7 +1664,7 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 }
 
 %ctor {
-    // The filter also injects into every UIKit app (needed for navigation, CA and
+    // The filter also injects into every UIKit app (needed for CA and
     // text-callout hooks). Everything below is SpringBoard-only: seeding
     // prefs from arbitrary apps is pointless, and the respring relay must
     // never call exitAndRelaunch: from inside a random app.
@@ -1735,7 +1674,10 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 
     sbc_install_landscape_hooks();
     sbt_install_home_double_tap_hook();
-    sbc_seed_defaults();
+    // Do not write or migrate preferences during SpringBoard construction.
+    // On iOS 15, synchronous cfprefsd writes here can stall SpringBoard before
+    // it finishes launching. The Settings bundle owns seeding/migration; all
+    // runtime reads already provide safe fallback values for missing keys.
     sbt_icon_restore_guard =
         sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"), NO) &&
         [[NSFileManager defaultManager] fileExistsAtPath:sbt_icon_layout_backup_path()];
