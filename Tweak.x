@@ -16,7 +16,7 @@
 //  - darksword disable_app_library(): hide App Library
 //  - darksword_tweaks.m double-tap-to-lock: home & lock screen gestures
 //  - FastAnimations: core animation clamp & Fast Copy callout (these two
-//    also load into every UIKit app via the com.apple.UIKit filter entry)
+//    also load into every application process containing UIApplication)
 //
 // Icon arrangement and add-to-dock from the original sbcustomizer.m were
 // dropped.
@@ -562,7 +562,7 @@ static NSUInteger sbc_landscape_rows(id self, SEL _cmd) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
-    if (!prefBool(p, @"homeGridEnabled", NO)) return orig;
+    if (!prefBool(p, @"homeGridLandscapeEnabled", NO)) return orig;
     return (NSUInteger)clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8);
 }
 
@@ -572,7 +572,7 @@ static NSUInteger sbc_landscape_columns(id self, SEL _cmd) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO)) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
-    if (!prefBool(p, @"homeGridEnabled", NO)) return orig;
+    if (!prefBool(p, @"homeGridLandscapeEnabled", NO)) return orig;
     return (NSUInteger)clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8);
 }
 
@@ -581,13 +581,13 @@ static UIEdgeInsets sbc_landscape_insets(id self, SEL _cmd) {
         ? sbc_orig_landscape_insets(self, _cmd) : UIEdgeInsetsZero;
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO) ||
-        !prefBool(p, @"homeSpacingEnabled", NO) ||
+        !prefBool(p, @"homeSpacingLandscapeEnabled", NO) ||
         sbc_config_kind(self) != SBC_CFG_ROOT)
         return orig;
-    UIEdgeInsets insets = UIEdgeInsetsMake(orig.top + prefDouble(p, @"homeExT", 0.0),
-                                           orig.left + prefDouble(p, @"homeExL", 0.0),
-                                           orig.bottom + prefDouble(p, @"homeExB", 0.0),
-                                           orig.right + prefDouble(p, @"homeExR", 0.0));
+    UIEdgeInsets insets = UIEdgeInsetsMake(orig.top + prefDouble(p, @"homeExTLandscape", 0.0),
+                                           orig.left + prefDouble(p, @"homeExLLandscape", 0.0),
+                                           orig.bottom + prefDouble(p, @"homeExBLandscape", 0.0),
+                                           orig.right + prefDouble(p, @"homeExRLandscape", 0.0));
     return constrained_grid_insets(insets,
         clampi((int)prefInt(p, @"hsColsLandscape", 6), 3, 8),
         clampi((int)prefInt(p, @"hsRowsLandscape", 5), 4, 8),
@@ -1240,8 +1240,7 @@ static inline double sbt_scaled_duration(double original) {
 
 // Fast Copy: show the copy/paste callout bar immediately instead of after
 // UIKit's built-in delay. Inspired by the classic Fast Copy tweak. Fires in
-// every app, not just SpringBoard (the substrate filter includes
-// com.apple.UIKit).
+// every app, not just SpringBoard (the substrate filter matches UIApplication).
 %hook UITextSelectionView
 - (void)showCalloutBarAfterDelay:(double)arg1 {
     %orig(sbc_pref_bool_live(CFSTR("fastCopy"), NO) ? 0 : arg1);
@@ -1670,6 +1669,27 @@ static void sbc_seed_defaults(void) {
     NSNumber *stored = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("defaultsVersion"), kPrefsDomain));
     BOOL force = !stored || [stored integerValue] < kSBTDefaultsVersion;
 
+    // Before v11 the portrait switches also controlled landscape. Inherit
+    // that state once so an upgrade does not silently alter an active layout.
+    if (stored && [stored integerValue] < 11) {
+        NSDictionary *migrations = @{
+            @"homeGridLandscapeEnabled": @"homeGridEnabled",
+            @"homeSpacingLandscapeEnabled": @"homeSpacingEnabled",
+        };
+        for (NSString *newKey in migrations) {
+            CFTypeRef newValue = CFPreferencesCopyAppValue((__bridge CFStringRef)newKey, kPrefsDomain);
+            if (!newValue) {
+                CFTypeRef oldValue = CFPreferencesCopyAppValue(
+                    (__bridge CFStringRef)migrations[newKey], kPrefsDomain);
+                if (oldValue) {
+                    CFPreferencesSetAppValue((__bridge CFStringRef)newKey, oldValue, kPrefsDomain);
+                    CFRelease(oldValue);
+                }
+            }
+            if (newValue) CFRelease(newValue);
+        }
+    }
+
     for (NSString *key in defs) {
         CFTypeRef existing = CFPreferencesCopyAppValue((__bridge CFStringRef)key, kPrefsDomain);
         BOOL invalidLegacyGridValue = [@[@"dockIcons", @"hsCols", @"hsRows",
@@ -1705,7 +1725,7 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 }
 
 %ctor {
-    // The filter also injects into every UIKit app (needed for the CA and
+    // The filter also injects into every UIKit app (needed for navigation, CA and
     // text-callout hooks). Everything below is SpringBoard-only: seeding
     // prefs from arbitrary apps is pointless, and the respring relay must
     // never call exitAndRelaunch: from inside a random app.

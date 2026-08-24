@@ -83,7 +83,16 @@ static void sbc_write_pref(NSString *key, id value, BOOL sync) {
     CGFloat fieldX = b.size.width - fieldW - pad;
     _field.frame = CGRectMake(fieldX, (b.size.height - 30.0) / 2.0, fieldW, 30.0);
 
-    CGFloat left = CGRectGetMaxX(self.textLabel.frame) + 8.0;
+    // PSTableCell sizes textLabel to its contents. Using its maxX made every
+    // slider start at a different position (for example, Extra Left versus
+    // Extra Right), so identical values looked unequal. Reserve one stable
+    // label column for every numeric cell instead.
+    CGFloat labelX = CGRectGetMinX(self.textLabel.frame);
+    CGFloat left = MIN(160.0, floor(b.size.width * 0.42));
+    CGRect labelFrame = self.textLabel.frame;
+    labelFrame.origin.x = labelX;
+    labelFrame.size.width = MAX(0.0, left - labelX - 8.0);
+    self.textLabel.frame = labelFrame;
     CGFloat sliderW = fieldX - pad - left;
     if (sliderW < 40.0) sliderW = 40.0;
     _slider.frame = CGRectMake(left, 0.0, sliderW, b.size.height);

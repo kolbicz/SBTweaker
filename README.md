@@ -12,7 +12,8 @@ These are in-process Substrate-hook reimplementations of my
 - **Home Screen grid**: configurable columns (3–8) and rows (4–8), set
   independently for portrait and landscape (landscape only affects rotating
   Home Screens, i.e. iPad)
-- **Spacing**: shared portrait/landscape Home Screen insets, plus dock spacing
+- **Spacing**: independent portrait and landscape Home Screen insets, plus dock
+  spacing
 - **Icon scale**: separate Home Screen and Dock scaling; the Home value applies
   in portrait and landscape
 - **Hide App Library**: removes the App Library page
@@ -33,6 +34,15 @@ These are in-process Substrate-hook reimplementations of my
 All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
+
+## Version 1.3.1
+
+- Moved Home Screen grid and spacing controls into one dedicated submenu.
+- Restored independent landscape spacing values.
+- Added separate grid and spacing enable switches for portrait and landscape.
+- Aligned numeric sliders using a consistent label column.
+- Fixed injection into UIKit application processes for the existing Faster
+  Core Animation and Fast Copy features.
 
 ## Version 1.3
 

@@ -13,6 +13,25 @@ static void sbc_seed_defaults(void) {
     NSNumber *stored = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("defaultsVersion"), kPrefsDomain));
     BOOL force = !stored || [stored integerValue] < kSBTDefaultsVersion;
 
+    if (stored && [stored integerValue] < 11) {
+        NSDictionary *migrations = @{
+            @"homeGridLandscapeEnabled": @"homeGridEnabled",
+            @"homeSpacingLandscapeEnabled": @"homeSpacingEnabled",
+        };
+        for (NSString *newKey in migrations) {
+            CFTypeRef newValue = CFPreferencesCopyAppValue((__bridge CFStringRef)newKey, kPrefsDomain);
+            if (!newValue) {
+                CFTypeRef oldValue = CFPreferencesCopyAppValue(
+                    (__bridge CFStringRef)migrations[newKey], kPrefsDomain);
+                if (oldValue) {
+                    CFPreferencesSetAppValue((__bridge CFStringRef)newKey, oldValue, kPrefsDomain);
+                    CFRelease(oldValue);
+                }
+            }
+            if (newValue) CFRelease(newValue);
+        }
+    }
+
     for (NSString *key in defs) {
         CFTypeRef existing = CFPreferencesCopyAppValue((__bridge CFStringRef)key, kPrefsDomain);
         BOOL invalidLegacyGridValue = [@[@"dockIcons", @"hsCols", @"hsRows",
@@ -39,6 +58,30 @@ static void sbc_post_notification(CFStringRef name) {
 
 @interface SBTRootListController : PSListController
 @end
+
+@interface SBTNotifyingListController : PSListController
+- (NSString *)plistName;
+@end
+
+@implementation SBTNotifyingListController
+- (NSString *)plistName { return @""; }
+- (NSArray *)specifiers {
+    if (!_specifiers)
+        _specifiers = [self loadSpecifiersFromPlistName:[self plistName] target:self];
+    return _specifiers;
+}
+- (void)setPreferenceValue:(id)value specifier:(PSSpecifier *)specifier {
+    [super setPreferenceValue:value specifier:specifier];
+    CFPreferencesAppSynchronize(kPrefsDomain);
+    sbc_post_notification(CFSTR("cz.kolbi.sbtweaker/apply"));
+}
+@end
+
+@interface SBTGridSpacingListController : SBTNotifyingListController @end
+@implementation SBTGridSpacingListController
+- (NSString *)plistName { return @"GridSpacing"; }
+@end
+
 
 @implementation SBTRootListController
 

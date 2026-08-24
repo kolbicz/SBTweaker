@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 
 static CFStringRef const SBTPreferencesDomain = CFSTR("cz.kolbi.sbtweaker");
-static NSInteger const SBTDefaultsVersion = 8;
+static NSInteger const SBTDefaultsVersion = 11;
 
 static inline NSDictionary *SBTDefaultValues(void) {
     static NSDictionary *values = nil;
@@ -13,15 +13,21 @@ static inline NSDictionary *SBTDefaultValues(void) {
             @"dockLayoutEnabled": @NO,
             @"dockIcons": @4,
             @"homeGridEnabled": @NO,
+            @"homeGridLandscapeEnabled": @NO,
             @"hsCols": iPad ? @5 : @4,
             @"hsRows": @6,
             @"hsColsLandscape": iPad ? @6 : @4,
             @"hsRowsLandscape": iPad ? @5 : @6,
             @"homeSpacingEnabled": @NO,
+            @"homeSpacingLandscapeEnabled": @NO,
             @"homeExL": @0.0,
             @"homeExR": @0.0,
             @"homeExT": @0.0,
             @"homeExB": @0.0,
+            @"homeExLLandscape": @0.0,
+            @"homeExRLandscape": @0.0,
+            @"homeExTLandscape": @0.0,
+            @"homeExBLandscape": @0.0,
             @"dockSpacingEnabled": @NO,
             @"dockExH": @0.0,
             @"homeScaleEnabled": @NO,
