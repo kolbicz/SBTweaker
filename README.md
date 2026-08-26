@@ -35,6 +35,15 @@ All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
 
+## Version 1.3.3
+
+- Fixed custom Home Screen rows and columns reverting to stock when widgets
+  are present on iOS/iPadOS 15.
+- Added support for the widget-specific `SBIconLocationRootWithWidgets` layout
+  used by SpringBoard.
+- Preserved existing widgets across resprings by no longer rewriting Home
+  Screen model grid state; custom sizing now uses layout metrics only.
+
 ## Version 1.3.2
 
 - Fixed SpringBoard hanging during respring on iOS/iPadOS 15 by removing

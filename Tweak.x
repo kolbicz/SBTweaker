@@ -47,6 +47,7 @@ typedef struct {
 - (id)layoutForIconLocation:(id)location;
 - (id)layout;
 - (id)layoutConfiguration;
+- (NSString *)iconLocation;
 - (id)icons;
 - (BOOL)importState:(id)state;
 - (void)noteIconStateChangedExternally;
@@ -229,23 +230,6 @@ static void disable_list_autofit(id listView, NSString *tag) {
     }
 }
 
-static BOOL patch_list_model_grid(id listView, NSString *tag, int cols, int rows) {
-    id model = list_view_model(listView);
-    if (!model || ![model respondsToSelector:@selector(gridSize)]) return NO;
-
-    SBCGridSize grid = { (unsigned short)cols, (unsigned short)rows };
-    if ([model respondsToSelector:@selector(setGridSize:)]) {
-        [model setGridSize:grid];
-    } else if ([model respondsToSelector:@selector(changeGridSize:options:)]) {
-        [model changeGridSize:grid options:0];
-    } else {
-        NSLog(@"[SBC] %@ model lacks grid setter", tag);
-        return NO;
-    }
-    NSLog(@"[SBC] %@ gridSize -> %dx%d", tag, cols, rows);
-    return YES;
-}
-
 static void patch_dock(id iconCtrl, id mgr, int dockIcons) {
     id dock = dock_list_view(iconCtrl, mgr);
     if (!dock) { NSLog(@"[SBC] dock: nil dockListView"); return; }
@@ -285,7 +269,11 @@ static void patch_homescreen_grid(id iconCtrl, id mgr, id cfg, int cols, int row
             if (!listView) continue;
             NSString *tag = [NSString stringWithFormat:@"page[%lu]", (unsigned long)i];
             disable_list_autofit(listView, tag);
-            patch_list_model_grid(listView, tag, cols, rows);
+            // Never rewrite a Home Screen model's grid. On iOS 15 this can
+            // invalidate and remove widgets during icon-state restoration.
+            // Configuration and SBIconListView metric hooks provide the
+            // custom capacity/layout without modifying the saved icon state.
+            [listView setNeedsLayout];
         }
     }
 }
@@ -407,12 +395,28 @@ static void apply_dock_scale(id dock, id dockCfg, double scale) {
 - (SBIconImageInfo)iconImageInfo;
 @end
 
+@interface SBIconListView : UIView
+- (NSString *)iconLocation;
+- (id)layout;
+- (NSUInteger)iconRowsForCurrentOrientation;
+- (NSUInteger)iconColumnsForCurrentOrientation;
+- (NSUInteger)iconRowsForSpacingCalculation;
+- (NSUInteger)iconsInRowForSpacingCalculation;
+@end
+
 @interface SBDockIconListModel : NSObject
 - (SBCGridSize)gridSize;
 @end
 
 static NSDictionary *sbc_cachedPrefs = nil;
 static CFAbsoluteTime sbc_prefs_loaded_at = 0;
+
+// iOS 15 gives pages containing widgets their own icon location. They are
+// still ordinary Home Screen root pages and must use the same custom metrics.
+static BOOL sbc_is_root_icon_location(NSString *location) {
+    return [location isEqualToString:@"SBIconLocationRoot"] ||
+           [location isEqualToString:@"SBIconLocationRootWithWidgets"];
+}
 
 // Preferences go through CFPreferences/cfprefsd — the same channel the
 // Settings pane writes through. Reading the plist file directly could serve
@@ -447,6 +451,22 @@ static NSDictionary *sbc_prefs(void) {
 
 static __weak id sbc_root_cfg = nil;
 static __weak id sbc_dock_cfg = nil;
+static NSHashTable *sbc_root_cfg_instances = nil;
+
+static NSHashTable *sbc_root_configs(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sbc_root_cfg_instances = [NSHashTable weakObjectsHashTable];
+    });
+    return sbc_root_cfg_instances;
+}
+
+static void sbc_register_root_config(id cfg) {
+    if (!cfg) return;
+    [sbc_root_configs() addObject:cfg];
+    sbc_root_cfg = cfg;
+
+}
 
 #define SBC_CFG_UNKNOWN 0
 #define SBC_CFG_ROOT    1
@@ -455,6 +475,7 @@ static __weak id sbc_dock_cfg = nil;
 static int sbc_config_kind(id cfg) {
     if (!cfg) return SBC_CFG_UNKNOWN;
     if (sbc_root_cfg && cfg == sbc_root_cfg) return SBC_CFG_ROOT;
+    if ([sbc_root_configs() containsObject:cfg]) return SBC_CFG_ROOT;
     if (sbc_dock_cfg && cfg == sbc_dock_cfg) return SBC_CFG_DOCK;
 
     // Refresh identities from the live layout provider.
@@ -464,6 +485,7 @@ static int sbc_config_kind(id cfg) {
     if ([provider respondsToSelector:@selector(layoutForIconLocation:)]) {
         id rl = [provider layoutForIconLocation:@"SBIconLocationRoot"];
         sbc_root_cfg = [rl respondsToSelector:@selector(layoutConfiguration)] ? [rl layoutConfiguration] : nil;
+        sbc_register_root_config(sbc_root_cfg);
         id dl = [provider layoutForIconLocation:@"SBIconLocationDock"];
         sbc_dock_cfg = [dl respondsToSelector:@selector(layoutConfiguration)] ? [dl layoutConfiguration] : nil;
     }
@@ -473,6 +495,13 @@ static int sbc_config_kind(id cfg) {
 }
 
 %hook SBIconListGridLayoutConfiguration
+- (id)copyWithZone:(NSZone *)zone {
+    id copy = %orig;
+    if ([sbc_root_configs() containsObject:self])
+        sbc_register_root_config(copy);
+    return copy;
+}
+
 - (NSUInteger)numberOfPortraitRows {
     NSUInteger orig = %orig;
     NSDictionary *p = sbc_prefs();
@@ -544,6 +573,63 @@ static int sbc_config_kind(id cfg) {
                                         : prefDouble(p, @"homeScale", 0.98);
     if (scale <= 0.0 || scale > 2.0) return orig;
     return configured_icon_image_info(scale);
+}
+%end
+
+// Widget-bearing Home Screen pages use page-specific (and sometimes copied)
+// grid configurations instead of the provider's canonical root instance.
+// Register only list views explicitly belonging to a root-page location so
+// the App Library, folders and dock remain untouched.
+%hook SBIconListView
+static BOOL sbc_root_list_uses_landscape_metrics(SBIconListView *listView) {
+    return CGRectGetWidth(listView.bounds) > CGRectGetHeight(listView.bounds);
+}
+
+static NSUInteger sbc_root_list_dimension(SBIconListView *listView,
+                                          NSUInteger original, BOOL rows) {
+    NSString *location = [listView respondsToSelector:@selector(iconLocation)]
+        ? [(id)listView iconLocation] : nil;
+    if (!sbc_is_root_icon_location(location)) return original;
+
+    NSDictionary *p = sbc_prefs();
+    if (!prefBool(p, @"enabled", NO)) return original;
+
+    BOOL landscape = sbc_root_list_uses_landscape_metrics(listView);
+    NSString *enabledKey = landscape ? @"homeGridLandscapeEnabled" : @"homeGridEnabled";
+    if (!prefBool(p, enabledKey, NO)) return original;
+
+    NSString *key = rows ? (landscape ? @"hsRowsLandscape" : @"hsRows")
+                         : (landscape ? @"hsColsLandscape" : @"hsCols");
+    int fallback = rows ? (landscape ? 5 : 6) : (landscape ? 6 : 5);
+    return (NSUInteger)clampi((int)prefInt(p, key, fallback), 1, 10);
+}
+
+- (NSUInteger)iconRowsForCurrentOrientation {
+    return sbc_root_list_dimension(self, %orig, YES);
+}
+
+- (NSUInteger)iconColumnsForCurrentOrientation {
+    return sbc_root_list_dimension(self, %orig, NO);
+}
+
+- (NSUInteger)iconRowsForSpacingCalculation {
+    return sbc_root_list_dimension(self, %orig, YES);
+}
+
+- (NSUInteger)iconsInRowForSpacingCalculation {
+    return sbc_root_list_dimension(self, %orig, NO);
+}
+
+- (void)layoutSubviews {
+    NSString *location = [self respondsToSelector:@selector(iconLocation)]
+        ? [(id)self iconLocation] : nil;
+    if (sbc_is_root_icon_location(location)) {
+        id layout = [self respondsToSelector:@selector(layout)] ? [(id)self layout] : nil;
+        id cfg = [layout respondsToSelector:@selector(layoutConfiguration)]
+            ? [layout layoutConfiguration] : nil;
+        sbc_register_root_config(cfg);
+    }
+    %orig;
 }
 %end
 
