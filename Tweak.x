@@ -404,12 +404,29 @@ static void apply_dock_scale(id dock, id dockCfg, double scale) {
 - (NSUInteger)iconsInRowForSpacingCalculation;
 @end
 
+@interface SBIconListModel : NSObject
+- (SBCGridSize)gridSize;
+@end
+
+@interface SBRootFolderView : UIView
+- (id)pageControl;
+@end
+
 @interface SBDockIconListModel : NSObject
 - (SBCGridSize)gridSize;
 @end
 
 static NSDictionary *sbc_cachedPrefs = nil;
 static CFAbsoluteTime sbc_prefs_loaded_at = 0;
+
+static BOOL sbc_is_ios18_or_newer(void) {
+    static BOOL result;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        result = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18;
+    });
+    return result;
+}
 
 // iOS 15 gives pages containing widgets their own icon location. They are
 // still ordinary Home Screen root pages and must use the same custom metrics.
@@ -452,6 +469,7 @@ static NSDictionary *sbc_prefs(void) {
 static __weak id sbc_root_cfg = nil;
 static __weak id sbc_dock_cfg = nil;
 static NSHashTable *sbc_root_cfg_instances = nil;
+static NSMapTable *sbc_root_model_list_views = nil;
 
 static NSHashTable *sbc_root_configs(void) {
     static dispatch_once_t onceToken;
@@ -459,6 +477,27 @@ static NSHashTable *sbc_root_configs(void) {
         sbc_root_cfg_instances = [NSHashTable weakObjectsHashTable];
     });
     return sbc_root_cfg_instances;
+}
+
+static NSMapTable *sbc_root_models(void) {
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        sbc_root_model_list_views = [NSMapTable weakToWeakObjectsMapTable];
+    });
+    return sbc_root_model_list_views;
+}
+
+static void sbc_register_root_models_for_list_view(SBIconListView *listView) {
+    if (!listView) return;
+    NSArray<NSString *> *selectors = @[@"model", @"iconListModel", @"displayedModel"];
+    for (NSString *name in selectors) {
+        SEL selector = NSSelectorFromString(name);
+        if (![listView respondsToSelector:selector]) continue;
+        id model = ((id (*)(id, SEL))objc_msgSend)(listView, selector);
+        if (model) @synchronized (sbc_root_models()) {
+            [sbc_root_models() setObject:listView forKey:model];
+        }
+    }
 }
 
 static void sbc_register_root_config(id cfg) {
@@ -624,12 +663,113 @@ static NSUInteger sbc_root_list_dimension(SBIconListView *listView,
     NSString *location = [self respondsToSelector:@selector(iconLocation)]
         ? [(id)self iconLocation] : nil;
     if (sbc_is_root_icon_location(location)) {
+        sbc_register_root_models_for_list_view(self);
         id layout = [self respondsToSelector:@selector(layout)] ? [(id)self layout] : nil;
         id cfg = [layout respondsToSelector:@selector(layoutConfiguration)]
             ? [layout layoutConfiguration] : nil;
         sbc_register_root_config(cfg);
     }
     %orig;
+}
+%end
+
+// iOS 18 stores sparse/free Home Screen placement, but its drag engine still
+// consults the list model's gridSize. SBTweaker's visual metric hooks alone
+// therefore expose extra rows without making them valid widget drop targets.
+// Return the matching visual grid only for registered root-page models on
+// iOS 18+, leaving iOS 15-17 and all non-root models completely untouched.
+static char sbc_ios18_grid_log_key;
+%hook SBIconListModel
+- (SBCGridSize)gridSize {
+    SBCGridSize original = %orig;
+    if (!sbc_is_ios18_or_newer()) return original;
+
+    SBIconListView *listView = nil;
+    @synchronized (sbc_root_models()) {
+        listView = [sbc_root_models() objectForKey:self];
+    }
+    if (!listView) return original;
+
+    NSString *location = [listView respondsToSelector:@selector(iconLocation)]
+        ? [(id)listView iconLocation] : nil;
+    if (!sbc_is_root_icon_location(location)) return original;
+
+    NSDictionary *p = sbc_prefs();
+    if (!prefBool(p, @"enabled", NO)) return original;
+    BOOL landscape = CGRectGetWidth(listView.bounds) > CGRectGetHeight(listView.bounds);
+    NSString *enabledKey = landscape ? @"homeGridLandscapeEnabled" : @"homeGridEnabled";
+    if (!prefBool(p, enabledKey, NO)) return original;
+
+    NSString *columnsKey = landscape ? @"hsColsLandscape" : @"hsCols";
+    NSString *rowsKey = landscape ? @"hsRowsLandscape" : @"hsRows";
+    int defaultColumns = landscape ? 6 : 4;
+    int defaultRows = landscape ? 5 : 6;
+    SBCGridSize configured = {
+        (unsigned short)clampi((int)prefInt(p, columnsKey, defaultColumns), 1, 10),
+        (unsigned short)clampi((int)prefInt(p, rowsKey, defaultRows), 1, 10)
+    };
+    NSUInteger signature = ((NSUInteger)configured.rows << 16) | configured.columns;
+    NSNumber *lastSignature = objc_getAssociatedObject(self, &sbc_ios18_grid_log_key);
+    if (!lastSignature || [lastSignature unsignedIntegerValue] != signature) {
+        NSLog(@"[SBC:I18] %@ placement grid %dx%d (stock %dx%d)", location,
+              configured.columns, configured.rows, original.columns, original.rows);
+        objc_setAssociatedObject(self, &sbc_ios18_grid_log_key, @(signature),
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return configured;
+}
+%end
+
+// Move the root Home Screen's combined page-dots/Search control after its
+// stock layout. Tracking the previously applied center avoids cumulative
+// drift if SpringBoard performs a child-only layout pass without resetting it.
+static char sbc_indicator_last_center_key;
+static char sbc_indicator_last_offset_key;
+
+static void sbc_set_indicator_offset(UIView *indicator, CGPoint offset) {
+    if (!indicator) return;
+    CGPoint current = indicator.center;
+    NSValue *lastCenterValue = objc_getAssociatedObject(indicator,
+                                                         &sbc_indicator_last_center_key);
+    NSValue *lastOffsetValue = objc_getAssociatedObject(indicator,
+                                                         &sbc_indicator_last_offset_key);
+    CGPoint base = current;
+    if (lastCenterValue && lastOffsetValue) {
+        CGPoint lastCenter = [lastCenterValue CGPointValue];
+        CGPoint lastOffset = [lastOffsetValue CGPointValue];
+        if (hypot(current.x - lastCenter.x, current.y - lastCenter.y) < 0.75)
+            base = CGPointMake(current.x - lastOffset.x, current.y - lastOffset.y);
+    }
+    CGPoint applied = CGPointMake(base.x + offset.x, base.y + offset.y);
+    BOOL changed = !lastOffsetValue ||
+        hypot(offset.x - [lastOffsetValue CGPointValue].x,
+              offset.y - [lastOffsetValue CGPointValue].y) >= 0.01;
+    indicator.center = applied;
+    objc_setAssociatedObject(indicator, &sbc_indicator_last_center_key,
+                             [NSValue valueWithCGPoint:applied], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(indicator, &sbc_indicator_last_offset_key,
+                             [NSValue valueWithCGPoint:offset], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if (changed)
+        NSLog(@"[SBC:INDICATOR] %@ offset x=%.1f y=%.1f",
+              NSStringFromClass([indicator class]), offset.x, offset.y);
+}
+
+%hook SBRootFolderView
+- (void)layoutSubviews {
+    %orig;
+    UIView *indicator = [self respondsToSelector:@selector(pageControl)]
+        ? (UIView *)[(id)self pageControl] : nil;
+    if (!indicator) return;
+
+    NSDictionary *p = sbc_prefs();
+    CGPoint offset = CGPointZero;
+    if (prefBool(p, @"enabled", NO) &&
+        prefBool(p, @"pageIndicatorPositionEnabled", NO)) {
+        BOOL landscape = CGRectGetWidth(self.bounds) > CGRectGetHeight(self.bounds);
+        offset.x = prefDouble(p, landscape ? @"pageIndicatorXLandscape" : @"pageIndicatorX", 0.0);
+        offset.y = prefDouble(p, landscape ? @"pageIndicatorYLandscape" : @"pageIndicatorY", 0.0);
+    }
+    sbc_set_indicator_offset(indicator, offset);
 }
 %end
 
@@ -1697,6 +1837,12 @@ static void sbc_apply(void) {
         apply_home_scale(mgr, cfg, homeScale);
     if (prefBool(p, @"dockScaleEnabled", NO) && dockScale > 0.0)
         apply_dock_scale(dock, dockCfg, dockScale);
+
+    id rootFolder = [mgr respondsToSelector:@selector(rootFolderController)]
+        ? [mgr rootFolderController] : nil;
+    UIView *rootFolderView = [rootFolder respondsToSelector:@selector(rootFolderView)]
+        ? [rootFolder rootFolderView] : nil;
+    [rootFolderView setNeedsLayout];
 
     sbc_apply_drag_coefficient();
 

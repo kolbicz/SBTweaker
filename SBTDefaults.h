@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 
 static CFStringRef const SBTPreferencesDomain = CFSTR("cz.kolbi.sbtweaker");
-static NSInteger const SBTDefaultsVersion = 11;
+static NSInteger const SBTDefaultsVersion = 12;
 
 static inline NSDictionary *SBTDefaultValues(void) {
     static NSDictionary *values = nil;
@@ -28,6 +28,11 @@ static inline NSDictionary *SBTDefaultValues(void) {
             @"homeExRLandscape": @0.0,
             @"homeExTLandscape": @0.0,
             @"homeExBLandscape": @0.0,
+            @"pageIndicatorPositionEnabled": @NO,
+            @"pageIndicatorX": @0.0,
+            @"pageIndicatorY": @0.0,
+            @"pageIndicatorXLandscape": @0.0,
+            @"pageIndicatorYLandscape": @0.0,
             @"dockSpacingEnabled": @NO,
             @"dockExH": @0.0,
             @"homeScaleEnabled": @NO,
