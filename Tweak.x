@@ -398,6 +398,7 @@ static void apply_dock_scale(id dock, id dockCfg, double scale) {
 @interface SBIconListView : UIView
 - (NSString *)iconLocation;
 - (id)layout;
+- (SBCGridSize)gridSizeForCurrentOrientation;
 - (NSUInteger)iconRowsForCurrentOrientation;
 - (NSUInteger)iconColumnsForCurrentOrientation;
 - (NSUInteger)iconRowsForSpacingCalculation;
@@ -406,6 +407,7 @@ static void apply_dock_scale(id dock, id dockCfg, double scale) {
 
 @interface SBIconListModel : NSObject
 - (SBCGridSize)gridSize;
+- (SBCGridSize)gridSizeWhenDirectlyContainingNonDefaultSizedIcons;
 @end
 
 @interface SBRootFolderView : UIView
@@ -659,6 +661,16 @@ static NSUInteger sbc_root_list_dimension(SBIconListView *listView,
     return sbc_root_list_dimension(self, %orig, NO);
 }
 
+- (SBCGridSize)gridSizeForCurrentOrientation {
+    SBCGridSize original = %orig;
+    if (!sbc_is_ios18_or_newer()) return original;
+    SBCGridSize configured = {
+        (unsigned short)sbc_root_list_dimension(self, original.columns, NO),
+        (unsigned short)sbc_root_list_dimension(self, original.rows, YES)
+    };
+    return configured;
+}
+
 - (void)layoutSubviews {
     NSString *location = [self respondsToSelector:@selector(iconLocation)]
         ? [(id)self iconLocation] : nil;
@@ -679,14 +691,15 @@ static NSUInteger sbc_root_list_dimension(SBIconListView *listView,
 // Return the matching visual grid only for registered root-page models on
 // iOS 18+, leaving iOS 15-17 and all non-root models completely untouched.
 static char sbc_ios18_grid_log_key;
-%hook SBIconListModel
-- (SBCGridSize)gridSize {
-    SBCGridSize original = %orig;
+static char sbc_ios18_widget_grid_log_key;
+
+static SBCGridSize sbc_ios18_model_grid(id model, SBCGridSize original,
+                                        NSString *source) {
     if (!sbc_is_ios18_or_newer()) return original;
 
     SBIconListView *listView = nil;
     @synchronized (sbc_root_models()) {
-        listView = [sbc_root_models() objectForKey:self];
+        listView = [sbc_root_models() objectForKey:model];
     }
     if (!listView) return original;
 
@@ -709,14 +722,25 @@ static char sbc_ios18_grid_log_key;
         (unsigned short)clampi((int)prefInt(p, rowsKey, defaultRows), 1, 10)
     };
     NSUInteger signature = ((NSUInteger)configured.rows << 16) | configured.columns;
-    NSNumber *lastSignature = objc_getAssociatedObject(self, &sbc_ios18_grid_log_key);
+    const void *logKey = [source isEqualToString:@"widget"]
+        ? &sbc_ios18_widget_grid_log_key : &sbc_ios18_grid_log_key;
+    NSNumber *lastSignature = objc_getAssociatedObject(model, logKey);
     if (!lastSignature || [lastSignature unsignedIntegerValue] != signature) {
-        NSLog(@"[SBC:I18] %@ placement grid %dx%d (stock %dx%d)", location,
+        NSLog(@"[SBC:I18] %@ %@ grid %dx%d (stock %dx%d)", location, source,
               configured.columns, configured.rows, original.columns, original.rows);
-        objc_setAssociatedObject(self, &sbc_ios18_grid_log_key, @(signature),
+        objc_setAssociatedObject(model, logKey, @(signature),
                                  OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     }
     return configured;
+}
+
+%hook SBIconListModel
+- (SBCGridSize)gridSize {
+    return sbc_ios18_model_grid(self, %orig, @"standard");
+}
+
+- (SBCGridSize)gridSizeWhenDirectlyContainingNonDefaultSizedIcons {
+    return sbc_ios18_model_grid(self, %orig, @"widget");
 }
 %end
 
