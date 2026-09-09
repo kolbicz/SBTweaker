@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.4
+
+- Added an opt-in Spotlight option: opening a search result now dismisses
+  Spotlight and clears its search field, so leaving the app shows the Home
+  Screen instead of the search it was launched from.
+- Suppressed the iPad/Mac return-to-Spotlight breadcrumb re-presentation while
+  the option is on.
+- Fixed the icon layout backup leaking into the shared mobile container on
+  roothide; the snapshot now stays inside the randomized jailbreak root.
+
 ## 1.3.3
 
 - Fixed custom Home Screen rows and columns reverting to the stock grid when

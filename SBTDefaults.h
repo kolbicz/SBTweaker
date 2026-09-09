@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 
 static CFStringRef const SBTPreferencesDomain = CFSTR("cz.kolbi.sbtweaker");
-static NSInteger const SBTDefaultsVersion = 11;
+static NSInteger const SBTDefaultsVersion = 12;
 
 static inline NSDictionary *SBTDefaultValues(void) {
     static NSDictionary *values = nil;
@@ -45,6 +45,7 @@ static inline NSDictionary *SBTDefaultValues(void) {
             @"noIconsFlyIn": @NO,
             @"fasterCoreAnimation": @NO,
             @"fastCopy": @NO,
+            @"dismissSpotlightAfterResult": @NO,
         };
     });
     return values;

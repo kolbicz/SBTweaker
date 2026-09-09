@@ -8,6 +8,9 @@
 #import <stdbool.h>
 #import <math.h>
 #import "SBTDefaults.h"
+#ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
+#import <roothide.h>
+#endif
 
 // SBTweaker — injection-tweak conversions of cyanide tweaks, all running
 // inside SpringBoard on the main thread (no RemoteCall plumbing):
@@ -71,6 +74,13 @@ typedef struct {
 - (void)relayout;
 - (void)layoutIconListsWithAnimationType:(NSInteger)type forceRelayout:(BOOL)force;
 - (void)_updateAfterManualIconImageInfoChangeInvalidatingLayout:(BOOL)invalidate;
+// Spotlight dismissal (SBHIconManager / SBRootFolderController / SBIconController)
+- (void)dismissSpotlightAnimated:(BOOL)animated completionHandler:(id)handler;
+- (BOOL)isShowingSpotlightOrLeadingCustomView;
+- (BOOL)isAnySearchVisibleOrTransitioning;
+- (void)dismissSearchView;
+// Spotlight UI process (SPUISearchViewController)
+- (void)clearTimerExpired;
 @end
 
 @interface SpringBoard : UIApplication
@@ -160,7 +170,14 @@ static void force_manager_relayout(id mgr) {
 // ------------------------------------------------------ icon layout backup
 
 static NSString *sbt_icon_layout_backup_path(void) {
+#ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
+    // Keep the snapshot inside roothide's randomized jailbreak root. Writing
+    // the literal rootfs path leaks the file into the shared mobile container,
+    // where sandboxed and non-roothide applications can see it.
+    return jbroot(@"/var/mobile/Library/Preferences/cz.kolbi.sbtweaker.iconlayout.plist");
+#else
     return @"/var/mobile/Library/Preferences/cz.kolbi.sbtweaker.iconlayout.plist";
+#endif
 }
 
 static BOOL sbt_icon_restore_guard = NO;
@@ -1333,323 +1350,110 @@ static inline double sbt_scaled_duration(double original) {
 }
 %end
 
-#if 0 // Removed: the Spotlight implementation is unreliable on iOS 15–17.
-// --------------------------------------- dismiss Spotlight after result tap
+// -------------------------------- dismiss Spotlight after opening a result
 //
-// Spotlight's concrete result controllers changed across iOS 15–17. Rather
-// than hard-linking one private class, observe result actions and dynamically
-// hook search-owned table/collection delegates as they are installed. All
-// hooks are gated by class/view names and preserve their original methods.
+// Tapping a Spotlight result launches the app, but SpringBoard leaves the
+// search presented underneath it, so leaving that app reveals Spotlight again
+// instead of the Home Screen. The typed query survives as well: Spotlight only
+// clears its search field once its own clear timer has expired (eight minutes
+// after the previous dismissal), so a quick return still shows the old text.
+//
+// Four narrow hooks, each a no-op where the class or method is absent:
+//  - SBMainWorkspace: an app transition began while search was on screen, so
+//    take the search down right there, while the app still covers the screen.
+//  - SBHomeScreenReturnToSpotlightPolicy: the iPad/Mac "spotlight breadcrumbs"
+//    path re-presents Spotlight when the Home Screen returns; refuse it.
+//  - SPUISearchViewController, twice: clear the query on dismissal, and treat
+//    the eight-minute clear timer as already expired when search is presented.
+//    These two run in the Spotlight UI process (com.apple.Spotlight), which
+//    the UIKit bundle filter already covers, because the search field lives
+//    there rather than in SpringBoard.
 
-static BOOL sbt_name_is_search_related(NSString *name) {
-    if (!name.length) return NO;
-    return [name containsString:@"SPUI"] ||
-           [name containsString:@"Spotlight"] ||
-           [name containsString:@"Search"];
+static BOOL sbt_dismiss_spotlight_enabled(void) {
+    return sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"), NO);
 }
 
-static BOOL sbt_spotlight_query_needs_clear = NO;
-static BOOL sbt_spotlight_dismiss_pending = NO;
-
-static BOOL sbt_view_is_search_related(UIView *view) {
-    for (UIView *candidate = view; candidate; candidate = candidate.superview) {
-        if (sbt_name_is_search_related(NSStringFromClass([candidate class])))
-            return YES;
-    }
-    UIResponder *responder = view.nextResponder;
-    for (NSUInteger i = 0; responder && i < 12; i++, responder = responder.nextResponder) {
-        if (sbt_name_is_search_related(NSStringFromClass([responder class])))
-            return YES;
-    }
+static BOOL sbt_spotlight_is_on_screen(void) {
+    id ctrl = [%c(SBIconController) sharedInstance];
+    if (!ctrl) return NO;
+    id mgr = [ctrl respondsToSelector:@selector(iconManager)] ? [ctrl iconManager] : nil;
+    if ([mgr respondsToSelector:@selector(isShowingSpotlightOrLeadingCustomView)])
+        return [mgr isShowingSpotlightOrLeadingCustomView];
+    // iOS 17 and older name on the controller; gone on iOS 26.
+    if ([ctrl respondsToSelector:@selector(isAnySearchVisibleOrTransitioning)])
+        return [ctrl isAnySearchVisibleOrTransitioning];
     return NO;
 }
 
-static BOOL sbt_action_looks_like_search_result(SEL action, id target, UIView *sender) {
-    if (!sbt_view_is_search_related(sender)) return NO;
-    for (UIView *view = sender; view; view = view.superview) {
-        if ([NSStringFromClass([view class]) containsString:@"Result"]) return YES;
+static void sbt_dismiss_spotlight(void) {
+    id ctrl = [%c(SBIconController) sharedInstance];
+    if (!ctrl) return;
+    id mgr = [ctrl respondsToSelector:@selector(iconManager)] ? [ctrl iconManager] : nil;
+    if ([mgr respondsToSelector:@selector(dismissSpotlightAnimated:completionHandler:)]) {
+        [mgr dismissSpotlightAnimated:NO completionHandler:nil];
+        return;
     }
-    NSString *targetName = NSStringFromClass([target class]);
-    if ([targetName containsString:@"Result"]) return YES;
-    NSString *actionName = NSStringFromSelector(action).lowercaseString;
-    return [actionName containsString:@"result"] ||
-           [actionName containsString:@"select"] ||
-           [actionName containsString:@"open"] ||
-           [actionName containsString:@"launch"];
+    id root = [ctrl respondsToSelector:@selector(rootFolderController)]
+        ? [ctrl rootFolderController] : nil;
+    if ([root respondsToSelector:@selector(dismissSpotlightAnimated:completionHandler:)]) {
+        [root dismissSpotlightAnimated:NO completionHandler:nil];
+        return;
+    }
+    if ([ctrl respondsToSelector:@selector(dismissSearchView)])
+        [ctrl dismissSearchView];
 }
 
-static void sbt_clear_search_text_in_view(UIView *view, BOOL searchContext) {
-    BOOL related = searchContext || sbt_name_is_search_related(NSStringFromClass([view class]));
-    if (related && [view isKindOfClass:[UISearchBar class]]) {
-        UISearchBar *bar = (UISearchBar *)view;
-        bar.text = @"";
-        [bar resignFirstResponder];
-    } else if (related && [view isKindOfClass:[UITextField class]]) {
-        UITextField *field = (UITextField *)view;
-        field.text = @"";
-        [field sendActionsForControlEvents:UIControlEventEditingChanged];
-        [field resignFirstResponder];
-    }
-    for (UIView *subview in view.subviews)
-        sbt_clear_search_text_in_view(subview, related);
-}
-
-static void sbt_invoke_search_dismiss_selector(id target, NSString *name) {
-    SEL selector = NSSelectorFromString(name);
-    if (!target || ![target respondsToSelector:selector]) return;
-    NSMethodSignature *signature = [target methodSignatureForSelector:selector];
-    if (!signature || signature.numberOfArguments > 3) return;
-    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
-    invocation.target = target;
-    invocation.selector = selector;
-    if (signature.numberOfArguments == 3) {
-        BOOL animated = YES;
-        [invocation setArgument:&animated atIndex:2];
-    }
-    [invocation invoke];
-}
-
-static void sbt_invoke_bool_selector(id target, NSString *name, BOOL value) {
-    SEL selector = NSSelectorFromString(name);
-    if (!target || ![target respondsToSelector:selector]) return;
-    NSMethodSignature *signature = [target methodSignatureForSelector:selector];
-    if (!signature || signature.numberOfArguments != 3) return;
-    NSInvocation *invocation = [NSInvocation invocationWithMethodSignature:signature];
-    invocation.target = target;
-    invocation.selector = selector;
-    [invocation setArgument:&value atIndex:2];
-    [invocation invoke];
-}
-
-static void sbt_dismiss_search_controller_in_view(UIView *view, BOOL searchContext) {
-    BOOL related = searchContext || sbt_name_is_search_related(NSStringFromClass([view class]));
-    if (related) {
-        UIResponder *responder = view.nextResponder;
-        if ([responder isKindOfClass:[UIViewController class]]) {
-            UIViewController *controller = (UIViewController *)responder;
-            sbt_invoke_search_dismiss_selector(controller, @"dismissSearchView");
-            sbt_invoke_search_dismiss_selector(controller, @"dismissAnimated:");
-            if (controller.presentingViewController)
-                [controller dismissViewControllerAnimated:YES completion:nil];
-        }
-    }
-    for (UIView *subview in view.subviews)
-        sbt_dismiss_search_controller_in_view(subview, related);
-}
-
-static void sbt_clear_and_dismiss_spotlight(void) {
-    if (!sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"), NO)) return;
-
-    UIApplication *application = [UIApplication sharedApplication];
-    for (UIScene *scene in application.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows) {
-            sbt_clear_search_text_in_view(window, NO);
-            sbt_dismiss_search_controller_in_view(window, NO);
-        }
-    }
-
-    NSArray<NSString *> *classNames = @[@"SBSearchViewController",
-                                         @"SBSearchController",
-                                         @"SBSpotlightController",
-                                         @"SPUISearchViewController"];
-    NSArray<NSString *> *sharedSelectors = @[@"sharedInstance",
-                                              @"sharedController"];
-    NSArray<NSString *> *dismissSelectors = @[@"dismissSearchView",
-                                               @"dismissSearchViewAnimated:",
-                                               @"dismissAnimated:",
-                                               @"hideSearch"];
-    for (NSString *className in classNames) {
-        Class cls = objc_getClass(className.UTF8String);
-        if (!cls) continue;
-        id target = nil;
-        for (NSString *sharedName in sharedSelectors) {
-            SEL shared = NSSelectorFromString(sharedName);
-            if ([cls respondsToSelector:shared]) {
-                target = ((id (*)(id, SEL))objc_msgSend)(cls, shared);
-                break;
-            }
-        }
-        if (!target && [className isEqualToString:@"SPUISearchViewController"])
-            continue;
-        // SBSearchViewController is the SpringBoard owner on iOS 15–17.
-        // Its public-to-SpringBoard visibility property is the reliable
-        // dismissal path; the other selectors cover version-specific owners.
-        sbt_invoke_bool_selector(target, @"setVisible:", NO);
-        for (NSString *dismissName in dismissSelectors)
-            sbt_invoke_search_dismiss_selector(target, dismissName);
-    }
-}
-
-static void sbt_clear_spotlight_query_if_needed(void) {
-    if (!sbt_spotlight_query_needs_clear) return;
-    UIApplication *application = [UIApplication sharedApplication];
-    for (UIScene *scene in application.connectedScenes) {
-        if (![scene isKindOfClass:[UIWindowScene class]]) continue;
-        for (UIWindow *window in ((UIWindowScene *)scene).windows)
-            sbt_clear_search_text_in_view(window, NO);
-    }
-    // Keep the flag until a search-owned text input is actually cleared.
-    // iPadOS 15 may retain the controller and restore its query after dismiss.
-}
-
-static void sbt_spotlight_result_will_be_selected(void) {
-    sbt_spotlight_query_needs_clear = YES;
-    // App launches can preserve the underlying Spotlight presentation even
-    // after an early setVisible:NO. Keep this pending until SpringBoard is
-    // active again so returning Home cannot reveal the old search screen.
-    sbt_spotlight_dismiss_pending = YES;
-    // This must happen before SpringBoard handles the result action. Once the
-    // original callback starts the app-launch transition, Spotlight's page is
-    // retained underneath the app and changing only the controller's visible
-    // flag is too late to affect the state restored on return to Home.
-    sbt_clear_and_dismiss_spotlight();
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.05 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        sbt_clear_and_dismiss_spotlight();
-    });
-    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.75 * NSEC_PER_SEC)),
-                   dispatch_get_main_queue(), ^{
-        sbt_clear_spotlight_query_if_needed();
+%hook SBMainWorkspace
+- (void)_executeApplicationTransitionRequest:(id)request {
+    // Every app transition that matters runs through here: launching the
+    // result, and coming back out of that app afterwards. Both start with the
+    // screen still covered by the app being raised or lowered, so this is the
+    // one moment where taking the search down cannot be seen.
+    //
+    // The dismissal has to be synchronous. Deferring it — to the owning
+    // transaction's completion, or to a timer — puts it after the return
+    // animation has already uncovered the Home Screen, and Spotlight is then
+    // visibly sitting there with its results until the dismissal lands.
+    BOOL searchOnScreen = sbt_is_springboard &&
+                          sbt_dismiss_spotlight_enabled() &&
+                          sbt_spotlight_is_on_screen();
+    if (searchOnScreen) sbt_dismiss_spotlight();
+    %orig;
+    if (!searchOnScreen) return;
+    // SpringBoard refuses the dismissal outright while it is still putting
+    // the transition together, so try once more on the next turn of the run
+    // loop — still inside the frame that commits the transition.
+    dispatch_async(dispatch_get_main_queue(), ^{
+        if (sbt_dismiss_spotlight_enabled() && sbt_spotlight_is_on_screen())
+            sbt_dismiss_spotlight();
     });
 }
+%end
 
-static NSMutableDictionary<NSString *, NSValue *> *sbt_search_originals(void) {
-    static NSMutableDictionary *originals = nil;
-    static dispatch_once_t onceToken;
-    dispatch_once(&onceToken, ^{ originals = [NSMutableDictionary new]; });
-    return originals;
-}
-
-static NSString *sbt_search_hook_key(Class cls, SEL selector) {
-    return [NSString stringWithFormat:@"%p:%@", cls, NSStringFromSelector(selector)];
-}
-
-static IMP sbt_search_original_for_object(id object, SEL selector) {
-    for (Class cls = object_getClass(object); cls; cls = class_getSuperclass(cls)) {
-        NSValue *value = sbt_search_originals()[sbt_search_hook_key(cls, selector)];
-        if (value) return [value pointerValue];
-    }
-    return NULL;
-}
-
-static void sbt_search_collection_selected(id self, SEL _cmd, id collectionView,
-                                           NSIndexPath *indexPath) {
-    sbt_spotlight_result_will_be_selected();
-    IMP original = sbt_search_original_for_object(self, _cmd);
-    if (original) ((void (*)(id, SEL, id, NSIndexPath *))original)(self, _cmd,
-                                                                   collectionView, indexPath);
-}
-
-static void sbt_hook_search_delegate(id delegate, SEL selector, IMP replacement) {
-    if (!delegate || !sbt_name_is_search_related(NSStringFromClass([delegate class]))) return;
-    Class cls = object_getClass(delegate);
-    NSString *key = sbt_search_hook_key(cls, selector);
-    if (sbt_search_originals()[key]) return;
-    Method method = class_getInstanceMethod(cls, selector);
-    if (!method) return;
-
-    // Materialize inherited implementations on the concrete search delegate
-    // before hooking, so unrelated UIKit delegates are never affected.
-    class_addMethod(cls, selector, method_getImplementation(method),
-                    method_getTypeEncoding(method));
-    IMP original = NULL;
-    MSHookMessageEx(cls, selector, replacement, &original);
-    if (original) sbt_search_originals()[key] = [NSValue valueWithPointer:original];
-}
-
-%hook UICollectionView
-- (void)setDelegate:(id)delegate {
-    %orig;
-    sbt_hook_search_delegate(delegate,
-        @selector(collectionView:didSelectItemAtIndexPath:),
-        (IMP)sbt_search_collection_selected);
+%hook SBHomeScreenReturnToSpotlightPolicy
+- (BOOL)willReactivateSpotlight {
+    return sbt_dismiss_spotlight_enabled() ? NO : %orig;
 }
 %end
 
-%hook UITableView
-- (void)setDelegate:(id)delegate {
-    %orig;
-    sbt_hook_search_delegate(delegate,
-        @selector(tableView:didSelectRowAtIndexPath:),
-        (IMP)sbt_search_collection_selected);
+%hook SPUISearchViewController
+- (BOOL)clearQueryOnDismissal {
+    return sbt_dismiss_spotlight_enabled() ? YES : %orig;
+}
+
+// Consulted from searchViewWillPresentFromSource:. Stock Spotlight only lets
+// the field go once eight minutes have passed since the last dismissal, so
+// swiping straight back down still shows the previous query and its results.
+// Report the timer as expired instead, which clears the results and refetches
+// the zero-keyword suggestions Spotlight opens with.
+- (BOOL)checkClearTimer {
+    if (!sbt_dismiss_spotlight_enabled()) return %orig;
+    id controller = self;
+    if ([controller respondsToSelector:@selector(clearTimerExpired)])
+        [controller clearTimerExpired];
+    return YES;
 }
 %end
-
-%hook UIApplication
-- (BOOL)sendAction:(SEL)action to:(id)target from:(id)sender forEvent:(UIEvent *)event {
-    BOOL searchResult = sbt_is_springboard &&
-        [sender isKindOfClass:[UIView class]] &&
-        sbt_action_looks_like_search_result(action, target, sender);
-    if (searchResult) sbt_spotlight_result_will_be_selected();
-    BOOL result = %orig;
-    return result;
-}
-%end
-
-%hook UITextField
-- (BOOL)becomeFirstResponder {
-    BOOL result = %orig;
-    if (result && sbt_spotlight_query_needs_clear && sbt_view_is_search_related(self)) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            self.text = @"";
-            [self sendActionsForControlEvents:UIControlEventEditingChanged];
-            sbt_spotlight_query_needs_clear = NO;
-        });
-    }
-    return result;
-}
-%end
-
-static void (*sbt_orig_search_set_visible)(id, SEL, BOOL) = NULL;
-
-static void sbt_search_set_visible(id self, SEL _cmd, BOOL visible) {
-    if (sbt_orig_search_set_visible)
-        sbt_orig_search_set_visible(self, _cmd, visible);
-    if (visible && sbt_spotlight_query_needs_clear) {
-        dispatch_async(dispatch_get_main_queue(), ^{
-            sbt_clear_spotlight_query_if_needed();
-        });
-    }
-}
-
-static void sbt_install_search_visibility_hook(void) {
-    Class cls = objc_getClass("SBSearchViewController");
-    SEL selector = @selector(setVisible:);
-    if (!cls || !class_getInstanceMethod(cls, selector)) return;
-    MSHookMessageEx(cls, selector, (IMP)sbt_search_set_visible,
-                    (IMP *)&sbt_orig_search_set_visible);
-}
-
-// A result-launched app can retain Spotlight as the SpringBoard scene beneath
-// it even when the search controller has been told to hide. Consume the
-// one-shot flag only on an actual Home return. After the normal app-minimize
-// transaction completes, a menu click makes SpringBoard leave its retained
-// search presentation exactly as if Home had been pressed while Spotlight was
-// visible. This deliberately does not run for app-switcher transitions.
-%hook SBUIController
-- (BOOL)handleHomeButtonSinglePressUp {
-    BOOL shouldReturnToIcons = sbt_is_springboard &&
-        sbt_spotlight_dismiss_pending &&
-        sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"), NO);
-    if (shouldReturnToIcons)
-        sbt_clear_and_dismiss_spotlight();
-
-    BOOL result = %orig;
-    if (shouldReturnToIcons) {
-        sbt_spotlight_dismiss_pending = NO;
-        dispatch_after(dispatch_time(DISPATCH_TIME_NOW,
-                                     (int64_t)(0.35 * NSEC_PER_SEC)),
-                       dispatch_get_main_queue(), ^{
-            [[%c(SBUIController) sharedInstance] clickedMenuButton];
-            sbt_clear_and_dismiss_spotlight();
-        });
-    }
-    return result;
-}
-%end
-
-#endif
 
 // ------------------------------------------------------------------ entry
 

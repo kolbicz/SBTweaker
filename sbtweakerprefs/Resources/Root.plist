@@ -270,6 +270,26 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
+			<string>Spotlight</string>
+			<key>footerText</key>
+			<string>Dismisses Spotlight and clears the search field once you open a result, so leaving that app returns you to the Home Screen instead of the search you came from. Without it, iOS keeps Spotlight presented behind the app and remembers the query for eight minutes.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>dismissSpotlightAfterResult</string>
+			<key>label</key>
+			<string>Dismiss After Opening a Result</string>
+			<key>default</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
 			<string>Double Tap to Lock</string>
 			<key>footerText</key>
 			<string>Double-tap an empty area to lock the device. The Home Screen gesture ignores icons, folders and the dock; the Lock Screen gesture does not interfere with the passcode pad.</string>

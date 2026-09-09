@@ -13,6 +13,10 @@ TWEAK_NAME = SBTweaker
 SBTweaker_FILES = Tweak.x
 SBTweaker_CFLAGS = -fobjc-arc
 
+ifeq ($(THEOS_PACKAGE_SCHEME),roothide)
+SBTweaker_LIBRARIES += roothide
+endif
+
 include $(THEOS)/makefiles/common.mk
 include $(THEOS_MAKE_PATH)/tweak.mk
 

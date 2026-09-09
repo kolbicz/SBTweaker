@@ -17,6 +17,9 @@ These are in-process Substrate-hook reimplementations of my
 - **Icon scale**: separate Home Screen and Dock scaling; the Home value applies
   in portrait and landscape
 - **Hide App Library**: removes the App Library page
+- **Spotlight**: optionally dismisses Spotlight and clears its search field
+  when you open a result, so leaving that app returns to the Home Screen
+  instead of the search you came from
 - **Double Tap to Lock**: separate switches for Home Screen and Lock Screen
   (ignores icons, folders and dock, and is disabled while passcode UI is shown)
 - **Icon Layout Backup**: opt-in automatic backup on native icon-state changes
@@ -34,6 +37,18 @@ These are in-process Substrate-hook reimplementations of my
 All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
+
+## Version 1.3.4
+
+- Added an opt-in Spotlight option that dismisses the search page and clears
+  its query when a result is opened, so leaving that app returns to the Home
+  Screen instead of the previous search.
+- Replaced the removed 1.3 Spotlight experiment with four targeted hooks: the
+  workspace app-transition path, the iPad/Mac return-to-Spotlight policy, and
+  Spotlight's own clear-query-on-dismissal flag and eight-minute clear timer.
+- Fixed the icon layout backup path on roothide: the snapshot is kept inside
+  the randomized jailbreak root instead of the shared mobile container, where
+  sandboxed and non-roothide apps could read it.
 
 ## Version 1.3.3
 
