@@ -44,7 +44,7 @@ apply live, and a respring button is included for changes that need one.
   its query when a result is opened, so leaving that app returns to the Home
   Screen instead of the previous search.
 - Replaced the removed 1.3 Spotlight experiment with four targeted hooks: the
-  workspace app-transition path, the iPad/Mac return-to-Spotlight policy, and
+  workspace app-transition path, the iPad return-to-Spotlight policy, and
   Spotlight's own clear-query-on-dismissal flag and eight-minute clear timer.
 - Fixed the icon layout backup path on roothide: the snapshot is kept inside
   the randomized jailbreak root instead of the shared mobile container, where
