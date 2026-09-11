@@ -8,6 +8,9 @@
 #import <stdbool.h>
 #import <math.h>
 #import "SBTDefaults.h"
+#ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
+#import <roothide.h>
+#endif
 
 // SBTweaker — injection-tweak conversions of cyanide tweaks, all running
 // inside SpringBoard on the main thread (no RemoteCall plumbing):
@@ -160,7 +163,14 @@ static void force_manager_relayout(id mgr) {
 // ------------------------------------------------------ icon layout backup
 
 static NSString *sbt_icon_layout_backup_path(void) {
+#ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
+    // Keep the snapshot inside roothide's randomized jailbreak root. Writing
+    // the literal rootfs path leaks the file into the shared mobile container,
+    // where sandboxed and non-roothide applications can see it.
+    return jbroot(@"/var/mobile/Library/Preferences/cz.kolbi.sbtweaker.iconlayout.plist");
+#else
     return @"/var/mobile/Library/Preferences/cz.kolbi.sbtweaker.iconlayout.plist";
+#endif
 }
 
 static BOOL sbt_icon_restore_guard = NO;
@@ -412,6 +422,7 @@ static void apply_dock_scale(id dock, id dockCfg, double scale) {
 
 @interface SBRootFolderView : UIView
 - (id)pageControl;
+- (id)scrollAccessoryView;
 @end
 
 @interface SBDockIconListModel : NSObject
@@ -693,6 +704,11 @@ static NSUInteger sbc_root_list_dimension(SBIconListView *listView,
 static char sbc_ios18_grid_log_key;
 static char sbc_ios18_widget_grid_log_key;
 
+// iOS 18's fixed-location widget model uses a finer cell grid than the visible
+// icon rows/columns. Obtain the default app icon's cell span dynamically (for
+// example 2x2) instead of treating an 8-row icon layout as an 8-cell widget
+// grid. The latter was the reason Test 2 still rejected the lower drop rows.
+
 static SBCGridSize sbc_ios18_model_grid(id model, SBCGridSize original,
                                         NSString *source) {
     if (!sbc_is_ios18_or_newer()) return original;
@@ -740,37 +756,63 @@ static SBCGridSize sbc_ios18_model_grid(id model, SBCGridSize original,
 }
 
 - (SBCGridSize)gridSizeWhenDirectlyContainingNonDefaultSizedIcons {
-    return sbc_ios18_model_grid(self, %orig, @"widget");
+    SBCGridSize original = %orig;
+    // This is not a layout query. SpringBoard reads it in exactly two places —
+    // updateGridSizeForInsertionOfFirstNonDefaultSizedIconIfNecessary and
+    // updateGridSizeForRemovalOfLastNonDefaultSizedIconIfNecessary — and both
+    // early-out through SBHIconGridSizeIsEmpty(), which is what happens on an
+    // ordinary page because the backing ivar is zero. Handing back a real grid
+    // turns those no-ops into changeGridSize: calls: the first widget added to
+    // a page rewrites the model's stored grid, and removing the last widget
+    // resets it to initialGridSize, throwing the custom grid away. Rewriting
+    // model grid state is also exactly what 1.3.3 stopped doing.
+    //
+    // Placement does not need this. gridCellInfoWithOptions: builds the layout
+    // from gridSizeWithOptions:, which dispatches plain gridSize — already
+    // hooked above — so the custom grid reaches widget placement either way.
+    if (!original.columns || !original.rows) return original;
+    return sbc_ios18_model_grid(self, original, @"widget");
 }
 %end
 
-// Move the root Home Screen's combined page-dots/Search control after its
-// stock layout. Tracking the previously applied center avoids cumulative
-// drift if SpringBoard performs a child-only layout pass without resetting it.
-static char sbc_indicator_last_center_key;
+// Move the root Home Screen's combined page-dots/Search control without
+// changing its layout-owned center. SpringBoard rewrites that center whenever
+// the active page changes; a view transform survives those frame/center
+// updates and also keeps the accessory's hit-testing in the visible position.
+static char sbc_indicator_base_transform_key;
+static char sbc_indicator_last_transform_key;
 static char sbc_indicator_last_offset_key;
 
 static void sbc_set_indicator_offset(UIView *indicator, CGPoint offset) {
     if (!indicator) return;
-    CGPoint current = indicator.center;
-    NSValue *lastCenterValue = objc_getAssociatedObject(indicator,
-                                                         &sbc_indicator_last_center_key);
+    CGAffineTransform current = indicator.transform;
+    NSValue *baseValue = objc_getAssociatedObject(indicator,
+                                                   &sbc_indicator_base_transform_key);
+    NSValue *lastTransformValue = objc_getAssociatedObject(indicator,
+                                                            &sbc_indicator_last_transform_key);
     NSValue *lastOffsetValue = objc_getAssociatedObject(indicator,
                                                          &sbc_indicator_last_offset_key);
-    CGPoint base = current;
-    if (lastCenterValue && lastOffsetValue) {
-        CGPoint lastCenter = [lastCenterValue CGPointValue];
-        CGPoint lastOffset = [lastOffsetValue CGPointValue];
-        if (hypot(current.x - lastCenter.x, current.y - lastCenter.y) < 0.75)
-            base = CGPointMake(current.x - lastOffset.x, current.y - lastOffset.y);
-    }
-    CGPoint applied = CGPointMake(base.x + offset.x, base.y + offset.y);
+    CGAffineTransform base = baseValue ? [baseValue CGAffineTransformValue]
+                                      : current;
+
+    // If SpringBoard legitimately replaced the transform (rather than merely
+    // laying out the center again), adopt that as the new stock transform.
+    if (lastTransformValue &&
+        !CGAffineTransformEqualToTransform(current,
+                                            [lastTransformValue CGAffineTransformValue]))
+        base = current;
+
+    CGAffineTransform applied = CGAffineTransformTranslate(base, offset.x, offset.y);
     BOOL changed = !lastOffsetValue ||
         hypot(offset.x - [lastOffsetValue CGPointValue].x,
               offset.y - [lastOffsetValue CGPointValue].y) >= 0.01;
-    indicator.center = applied;
-    objc_setAssociatedObject(indicator, &sbc_indicator_last_center_key,
-                             [NSValue valueWithCGPoint:applied], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    indicator.transform = applied;
+    objc_setAssociatedObject(indicator, &sbc_indicator_base_transform_key,
+                             [NSValue valueWithCGAffineTransform:base],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(indicator, &sbc_indicator_last_transform_key,
+                             [NSValue valueWithCGAffineTransform:applied],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     objc_setAssociatedObject(indicator, &sbc_indicator_last_offset_key,
                              [NSValue valueWithCGPoint:offset], OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     if (changed)
@@ -778,22 +820,36 @@ static void sbc_set_indicator_offset(UIView *indicator, CGPoint offset) {
               NSStringFromClass([indicator class]), offset.x, offset.y);
 }
 
-%hook SBRootFolderView
-- (void)layoutSubviews {
-    %orig;
-    UIView *indicator = [self respondsToSelector:@selector(pageControl)]
-        ? (UIView *)[(id)self pageControl] : nil;
+static void sbc_apply_root_indicator_offset(SBRootFolderView *rootView) {
+    // The iOS 18 Search pill/page dots live inside this accessory container.
+    // Moving the inherited pageControl alone leaves the visible pill and its
+    // hit target at the stock position.
+    UIView *indicator = [rootView respondsToSelector:@selector(scrollAccessoryView)]
+        ? (UIView *)[(id)rootView scrollAccessoryView] : nil;
+    if (!indicator && [rootView respondsToSelector:@selector(pageControl)])
+        indicator = (UIView *)[(id)rootView pageControl];
     if (!indicator) return;
 
     NSDictionary *p = sbc_prefs();
     CGPoint offset = CGPointZero;
     if (prefBool(p, @"enabled", NO) &&
         prefBool(p, @"pageIndicatorPositionEnabled", NO)) {
-        BOOL landscape = CGRectGetWidth(self.bounds) > CGRectGetHeight(self.bounds);
+        BOOL landscape = CGRectGetWidth(rootView.bounds) > CGRectGetHeight(rootView.bounds);
         offset.x = prefDouble(p, landscape ? @"pageIndicatorXLandscape" : @"pageIndicatorX", 0.0);
         offset.y = prefDouble(p, landscape ? @"pageIndicatorYLandscape" : @"pageIndicatorY", 0.0);
     }
     sbc_set_indicator_offset(indicator, offset);
+}
+
+%hook SBRootFolderView
+- (void)layoutSubviews {
+    %orig;
+    sbc_apply_root_indicator_offset(self);
+}
+
+- (void)_layoutSubviews {
+    %orig;
+    sbc_apply_root_indicator_offset(self);
 }
 %end
 
