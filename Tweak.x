@@ -308,14 +308,14 @@ static void apply_home_spacing(id cfg, double exL, double exR, double exT, doubl
     NSLog(@"[SBC:SPACE] home insets +L%.1f/R%.1f/T%.1f/B%.1f", exL, exR, exT, exB);
 }
 
-static void apply_dock_spacing(id dockCfg, double extraH) {
+static void apply_dock_spacing(id dockCfg, double extraL, double extraR) {
     if (![dockCfg respondsToSelector:@selector(setPortraitLayoutInsets:)]) {
         NSLog(@"[SBC:SPACE] dock layoutConfiguration lacks setPortraitLayoutInsets:");
         return;
     }
-    [dockCfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + extraH,
-                                                      0.0, 16.0 + extraH)];
-    NSLog(@"[SBC:SPACE] dock insets +H%.1f", extraH);
+    [dockCfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + extraL,
+                                                      0.0, 16.0 + extraR)];
+    NSLog(@"[SBC:SPACE] dock insets +L%.1f/+R%.1f", extraL, extraR);
 }
 
 // ----------------------------------------------------- scaling (darksword_layout)
@@ -419,6 +419,11 @@ static void apply_dock_scale(id dock, id dockCfg, double scale) {
 - (NSUInteger)iconColumnsForCurrentOrientation;
 - (NSUInteger)iconRowsForSpacingCalculation;
 - (NSUInteger)iconsInRowForSpacingCalculation;
+@end
+
+@interface SBRootFolderView : UIView
+- (id)pageControl;
+- (id)scrollAccessoryView;
 @end
 
 @interface SBDockIconListModel : NSObject
@@ -548,7 +553,7 @@ static int sbc_config_kind(id cfg) {
         kind = SBC_CFG_DOCK;
     }
     if (kind == SBC_CFG_DOCK && prefBool(p, @"dockLayoutEnabled", NO))
-        return (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
+        return (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 5), 1, 8);
     if (kind == SBC_CFG_ROOT && prefBool(p, @"homeGridEnabled", NO))
         return (NSUInteger)clampi((int)prefInt(p, @"hsCols", 5), 1, 10);
     return orig;
@@ -561,8 +566,8 @@ static int sbc_config_kind(id cfg) {
     int kind = sbc_config_kind(self);
     if (kind == SBC_CFG_DOCK) {
         if (!prefBool(p, @"dockSpacingEnabled", NO)) return orig;
-        double h = prefDouble(p, @"dockExH", 30.0);
-        return UIEdgeInsetsMake(0.0, 16.0 + h, 0.0, 16.0 + h);
+        return UIEdgeInsetsMake(0.0, 16.0 + prefDouble(p, @"dockExL", 0.0),
+                                0.0, 16.0 + prefDouble(p, @"dockExR", 0.0));
     }
     if (kind == SBC_CFG_ROOT) {
         if (!prefBool(p, @"homeSpacingEnabled", NO)) return orig;
@@ -744,7 +749,7 @@ static void sbc_install_landscape_hooks(void) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO)) return grid;
     if (!prefBool(p, @"dockLayoutEnabled", NO)) return grid;
-    int dockIcons = clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
+    int dockIcons = clampi((int)prefInt(p, @"dockIcons", 5), 1, 8);
     if (grid.columns < dockIcons) grid.columns = (unsigned short)dockIcons;
     return grid;
 }
@@ -802,8 +807,9 @@ static void sbc_patch_dock_config(id dock) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled", NO)) return;
 
-    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
-    double dockExH   = prefDouble(p, @"dockExH", 30.0);
+    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 1, 8);
+    double dockExL   = prefDouble(p, @"dockExL", 0.0);
+    double dockExR   = prefDouble(p, @"dockExR", 0.0);
     double dockScale = prefDouble(p, @"dockScale", 0.98);
 
     id cfg = dock_layout_config(dock);
@@ -812,8 +818,8 @@ static void sbc_patch_dock_config(id dock) {
         [cfg setNumberOfPortraitColumns:(NSUInteger)dockIcons];
     if (prefBool(p, @"dockSpacingEnabled", NO) &&
         [cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
-        [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + dockExH,
-                                                    0.0, 16.0 + dockExH)];
+        [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + dockExL,
+                                                    0.0, 16.0 + dockExR)];
     if (prefBool(p, @"dockScaleEnabled", NO) &&
         dockScale > 0.0 && dockScale <= 2.0 &&
         [cfg respondsToSelector:@selector(setIconImageInfo:)])
@@ -907,6 +913,68 @@ static BOOL sbc_hide_app_library(void) {
 }
 %end
 
+// Move the root Home Screen's combined page-dots/Search control without
+// changing its layout-owned center. SpringBoard rewrites that center whenever
+// the active page changes; a view transform survives those frame/center
+// updates and also keeps the accessory's hit-testing in the visible position.
+static char sbc_indicator_base_transform_key;
+static char sbc_indicator_last_transform_key;
+static char sbc_indicator_last_offset_key;
+
+static void sbc_set_indicator_offset(UIView *indicator, CGPoint offset) {
+    if (!indicator) return;
+    CGAffineTransform current = indicator.transform;
+    NSValue *baseValue = objc_getAssociatedObject(indicator,
+                                                  &sbc_indicator_base_transform_key);
+    NSValue *lastTransformValue = objc_getAssociatedObject(indicator,
+                                                           &sbc_indicator_last_transform_key);
+    NSValue *lastOffsetValue = objc_getAssociatedObject(indicator,
+                                                        &sbc_indicator_last_offset_key);
+    CGAffineTransform base = baseValue ? [baseValue CGAffineTransformValue] : current;
+
+    // If SpringBoard legitimately replaced the transform (rather than merely
+    // laying out the center again), adopt that as the new stock transform.
+    if (lastTransformValue &&
+        !CGAffineTransformEqualToTransform(current,
+                                           [lastTransformValue CGAffineTransformValue]))
+        base = current;
+
+    CGAffineTransform applied = CGAffineTransformTranslate(base, offset.x, offset.y);
+    indicator.transform = applied;
+    objc_setAssociatedObject(indicator, &sbc_indicator_base_transform_key,
+                             [NSValue valueWithCGAffineTransform:base],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(indicator, &sbc_indicator_last_transform_key,
+                             [NSValue valueWithCGAffineTransform:applied],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    objc_setAssociatedObject(indicator, &sbc_indicator_last_offset_key,
+                             [NSValue valueWithCGPoint:offset],
+                             OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    (void)lastOffsetValue;
+}
+
+static void sbc_apply_root_indicator_offset(SBRootFolderView *rootView) {
+    // On iOS 18 the Search pill and page dots live inside this accessory
+    // container. Moving the inherited pageControl alone leaves the visible
+    // pill and its hit target at the stock position, so prefer the accessory
+    // and fall back to pageControl on versions that lack it.
+    UIView *indicator = [rootView respondsToSelector:@selector(scrollAccessoryView)]
+        ? (UIView *)[(id)rootView scrollAccessoryView] : nil;
+    if (!indicator && [rootView respondsToSelector:@selector(pageControl)])
+        indicator = (UIView *)[(id)rootView pageControl];
+    if (!indicator) return;
+
+    NSDictionary *p = sbc_prefs();
+    CGPoint offset = CGPointZero;
+    if (prefBool(p, @"enabled", NO) &&
+        prefBool(p, @"pageIndicatorPositionEnabled", NO)) {
+        BOOL landscape = CGRectGetWidth(rootView.bounds) > CGRectGetHeight(rootView.bounds);
+        offset.x = prefDouble(p, landscape ? @"pageIndicatorXLandscape" : @"pageIndicatorX", 0.0);
+        offset.y = prefDouble(p, landscape ? @"pageIndicatorYLandscape" : @"pageIndicatorY", 0.0);
+    }
+    sbc_set_indicator_offset(indicator, offset);
+}
+
 %hook SBRootFolderView
 - (NSArray *)trailingCustomViewControllers {
     return sbc_hide_app_library() ? @[] : %orig;
@@ -918,6 +986,14 @@ static BOOL sbc_hide_app_library(void) {
 // installed before the hooks were loaded (iOS 15/16).
 - (NSUInteger)_trailingCustomPageCount {
     return sbc_hide_app_library() ? 0 : %orig;
+}
+- (void)layoutSubviews {
+    %orig;
+    sbc_apply_root_indicator_offset(self);
+}
+- (void)_layoutSubviews {
+    %orig;
+    sbc_apply_root_indicator_offset(self);
 }
 %end
 
@@ -935,8 +1011,10 @@ static BOOL sbc_hide_app_library(void) {
     if (!prefBool(p, @"enabled", NO) ||
         !prefBool(p, @"dockLayoutEnabled", NO))
         return original;
-    return MAX(original,
-               (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 4), 4, 8));
+    // Return the configured count rather than MAX(original, configured). The
+    // range now goes below the stock four, and a floor of four would let the
+    // dock hold more icons than the grid has slots for.
+    return (NSUInteger)clampi((int)prefInt(p, @"dockIcons", 4), 1, 8);
 }
 %end
 
@@ -1350,6 +1428,31 @@ static inline double sbt_scaled_duration(double original) {
 }
 %end
 
+// ------------------------------------------------ lock screen idle timeout
+//
+// The Lock Screen's dim-then-sleep countdown is not one constant. SpringBoard
+// picks an enum bucket from whatever is on screen — 6s is the usual "reading
+// notifications" one — maps that to seconds, and then floors every lock-screen
+// descriptor through -[SBIdleTimerDescriptorFactory
+// sanitizeDescriptorForLockscreenDefaults:] with minimumLockscreenIdleTime.
+//
+// Raising that floor therefore covers every state from a single getter: before
+// and after Face ID, with notifications up, with Siri. It is re-read whenever
+// the descriptor is rebuilt, so a change applies on the next lock rather than
+// needing a respring. The getter itself tail-calls a block ivar, which %orig
+// still evaluates when the option is off.
+//
+// Settings > Display & Brightness > Auto-Lock remains a ceiling over the whole
+// thing: this cannot hold the screen on longer than Auto-Lock allows.
+
+%hook SBIdleTimerGlobalStateMonitor
+- (double)minimumLockscreenIdleTime {
+    if (!sbc_pref_bool_live(CFSTR("lockScreenDurationEnabled"), NO)) return %orig;
+    double seconds = sbc_pref_double_live(CFSTR("lockScreenDuration"), 30.0);
+    return seconds > 0.0 ? seconds : %orig;
+}
+%end
+
 // -------------------------------- dismiss Spotlight after opening a result
 //
 // Tapping a Spotlight result launches the app, but SpringBoard leaves the
@@ -1461,7 +1564,7 @@ static void sbc_apply(void) {
     NSDictionary *p = sbc_reload_prefs(); // refresh the cache used by the configuration getter hooks
     if (!prefBool(p, @"enabled", NO)) { NSLog(@"[SBC] disabled"); return; }
 
-    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 4, 8);
+    int dockIcons    = clampi((int)prefInt(p, @"dockIcons", 5), 1, 8);
     int hsCols       = clampi((int)prefInt(p, @"hsCols", 5), 1, 10);
     int hsRows       = clampi((int)prefInt(p, @"hsRows", 6), 1, 10);
     int hsColsL      = clampi((int)prefInt(p, @"hsColsLandscape", 6), 1, 10);
@@ -1470,13 +1573,14 @@ static void sbc_apply(void) {
     double homeExR   = prefDouble(p, @"homeExR", 20.0);
     double homeExT   = prefDouble(p, @"homeExT", 40.0);
     double homeExB   = prefDouble(p, @"homeExB", 180.0);
-    double dockExH   = prefDouble(p, @"dockExH", 30.0);
+    double dockExL   = prefDouble(p, @"dockExL", 0.0);
+    double dockExR   = prefDouble(p, @"dockExR", 0.0);
     double homeScale = prefDouble(p, @"homeScale", 0.98);
     double dockScale = prefDouble(p, @"dockScale", 0.98);
 
-    NSLog(@"[SBC] apply dock=%d hs=%dx%d ls=%dx%d space=+%.0f/%.0f/%.0f/%.0f dockH=%.0f scale=%.2f/%.2f",
+    NSLog(@"[SBC] apply dock=%d hs=%dx%d ls=%dx%d space=+%.0f/%.0f/%.0f/%.0f dockLR=%.0f/%.0f scale=%.2f/%.2f",
           dockIcons, hsCols, hsRows, hsColsL, hsRowsL,
-          homeExL, homeExR, homeExT, homeExB, dockExH, homeScale, dockScale);
+          homeExL, homeExR, homeExT, homeExB, dockExL, dockExR, homeScale, dockScale);
 
     id iconCtrl = [%c(SBIconController) sharedInstance];
     if (!iconCtrl) { NSLog(@"[SBC] SBIconController missing"); return; }
@@ -1496,11 +1600,18 @@ static void sbc_apply(void) {
     if (prefBool(p, @"homeSpacingEnabled", NO))
         apply_home_spacing(cfg, homeExL, homeExR, homeExT, homeExB);
     if (prefBool(p, @"dockSpacingEnabled", NO))
-        apply_dock_spacing(dockCfg, dockExH);
+        apply_dock_spacing(dockCfg, dockExL, dockExR);
     if (prefBool(p, @"homeScaleEnabled", NO) && homeScale > 0.0)
         apply_home_scale(mgr, cfg, homeScale);
     if (prefBool(p, @"dockScaleEnabled", NO) && dockScale > 0.0)
         apply_dock_scale(dock, dockCfg, dockScale);
+
+    // Re-run the indicator offset against the new preferences.
+    id rootFolder = [mgr respondsToSelector:@selector(rootFolderController)]
+        ? [mgr rootFolderController] : nil;
+    UIView *rootFolderView = [rootFolder respondsToSelector:@selector(rootFolderView)]
+        ? [rootFolder rootFolderView] : nil;
+    [rootFolderView setNeedsLayout];
 
     sbc_apply_drag_coefficient();
 

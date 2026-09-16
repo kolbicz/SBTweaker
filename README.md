@@ -7,19 +7,23 @@ These are in-process Substrate-hook reimplementations of my
 
 ## Features
 
-- **Dock**: configurable icon count (4–8), including live capacity updates
+- **Dock**: configurable icon count (1–8), including live capacity updates
   so newly enabled slots can be filled without a respring
 - **Home Screen grid**: configurable columns and rows (1–10), set
   independently for portrait and landscape (landscape only affects rotating
   Home Screens, i.e. iPad)
-- **Spacing**: independent portrait and landscape Home Screen insets, plus dock
-  spacing
+- **Spacing**: independent portrait and landscape Home Screen insets, plus
+  independent left and right dock spacing
 - **Icon scale**: separate Home Screen and Dock scaling; the Home value applies
   in portrait and landscape
 - **Hide App Library**: removes the App Library page
 - **Spotlight**: optionally dismisses Spotlight and clears its search field
   when you open a result, so leaving that app returns to the Home Screen
   instead of the search you came from
+- **Lock Screen Timeout**: hold the Lock Screen awake longer before it dims and
+  sleeps (5–300s, capped by Auto-Lock)
+- **Page & Search Indicator**: opt-in portrait and landscape X/Y offsets for the
+  Home Screen page dots or Search indicator
 - **Double Tap to Lock**: separate switches for Home Screen and Lock Screen
   (ignores icons, folders and dock, and is disabled while passcode UI is shown)
 - **Icon Layout Backup**: opt-in automatic backup on native icon-state changes
@@ -37,6 +41,18 @@ These are in-process Substrate-hook reimplementations of my
 All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
+
+## Version 1.3.5
+
+- Added an opt-in Lock Screen Timeout option. SpringBoard floors every
+  lock-screen idle descriptor with `minimumLockscreenIdleTime`, so raising that
+  one value covers each state — before and after Face ID, notifications shown,
+  Siri — and applies on the next lock without a respring. Auto-Lock still caps
+  the total.
+- Added opt-in page dots / Search indicator offsets, applied as a view
+  transform so SpringBoard's own centre updates do not undo them.
+- Widened the Dock icon count to 1-8 and split Dock spacing into independent
+  left and right values, migrating any existing combined value to both.
 
 ## Version 1.3.4
 

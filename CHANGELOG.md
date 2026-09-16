@@ -1,5 +1,16 @@
 # Changelog
 
+## 1.3.5
+
+- Added an opt-in Lock Screen Timeout option that holds the Lock Screen awake
+  longer before it dims and sleeps, so notifications stay readable. Auto-Lock
+  still caps the total.
+- Added opt-in portrait and landscape offsets for the Home Screen page dots and
+  Search indicator, under Grid and Spacing Settings.
+- Widened the Dock icon count to 1-8.
+- Split Dock spacing into independent left and right values; an existing
+  combined value carries over to both.
+
 ## 1.3.4
 
 - Added an opt-in Spotlight option: opening a search result now dismisses

@@ -28,7 +28,7 @@
 			<key>label</key>
 			<string>Dock</string>
 			<key>footerText</key>
-			<string>Customize the Dock from 4 to 7 icons. Capacity and layout update together so newly enabled slots can be filled without a respring.</string>
+			<string>Customize the Dock from 1 to 8 icons. Capacity and layout update together so newly enabled slots can be filled without a respring. Choosing fewer icons than the Dock currently holds moves the extras out to the Home Screen.</string>
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>
@@ -47,7 +47,7 @@
 			<key>label</key>
 			<string>Dock Icons</string>
 			<key>min</key>
-			<integer>4</integer>
+			<integer>1</integer>
 			<key>max</key>
 			<integer>8</integer>
 			<key>default</key>
@@ -91,9 +91,25 @@
 			<key>defaults</key>
 			<string>cz.kolbi.sbtweaker</string>
 			<key>key</key>
-			<string>dockExH</string>
+			<string>dockExL</string>
 			<key>label</key>
-			<string>Extra Horizontal</string>
+			<string>Extra Left</string>
+			<key>min</key>
+			<real>-10</real>
+			<key>max</key>
+			<real>40</real>
+			<key>default</key>
+			<real>0</real>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>SBTNumberCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>dockExR</string>
+			<key>label</key>
+			<string>Extra Right</string>
 			<key>min</key>
 			<real>-10</real>
 			<key>max</key>
@@ -285,6 +301,44 @@
 			<string>Dismiss After Opening a Result</string>
 			<key>default</key>
 			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Lock Screen Timeout</string>
+			<key>footerText</key>
+			<string>Holds the Lock Screen awake longer before it dims and sleeps, so notifications stay readable. This is the short countdown on the Lock Screen itself, not Auto-Lock — Settings, Display &amp; Brightness, Auto-Lock still caps the total, so a value above it has no extra effect. Applies on the next lock; no respring needed.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>lockScreenDurationEnabled</string>
+			<key>label</key>
+			<string>Customize Lock Screen Timeout</string>
+			<key>default</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>SBTNumberCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>lockScreenDuration</string>
+			<key>label</key>
+			<string>Seconds</string>
+			<key>min</key>
+			<integer>5</integer>
+			<key>max</key>
+			<integer>300</integer>
+			<key>default</key>
+			<integer>30</integer>
+			<key>isInteger</key>
+			<true/>
 		</dict>
 		<dict>
 			<key>cell</key>

@@ -13,11 +13,19 @@ static void sbc_seed_defaults(void) {
     NSNumber *stored = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("defaultsVersion"), kPrefsDomain));
     BOOL force = !stored || [stored integerValue] < kSBTDefaultsVersion;
 
+    // Each entry copies the old key's value into the new one, but only when the
+    // new key has not been written yet, so a deliberate choice is never undone.
+    NSMutableDictionary *migrations = [NSMutableDictionary dictionary];
     if (stored && [stored integerValue] < 11) {
-        NSDictionary *migrations = @{
-            @"homeGridLandscapeEnabled": @"homeGridEnabled",
-            @"homeSpacingLandscapeEnabled": @"homeSpacingEnabled",
-        };
+        migrations[@"homeGridLandscapeEnabled"] = @"homeGridEnabled";
+        migrations[@"homeSpacingLandscapeEnabled"] = @"homeSpacingEnabled";
+    }
+    if (stored && [stored integerValue] < 14) {
+        // Dock spacing split into independent left and right values.
+        migrations[@"dockExL"] = @"dockExH";
+        migrations[@"dockExR"] = @"dockExH";
+    }
+    if (migrations.count) {
         for (NSString *newKey in migrations) {
             CFTypeRef newValue = CFPreferencesCopyAppValue((__bridge CFStringRef)newKey, kPrefsDomain);
             if (!newValue) {
