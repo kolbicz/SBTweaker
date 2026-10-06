@@ -1461,11 +1461,13 @@ static BOOL sbt_is_springboard = NO;
 // pane, so app-side switches apply without a respring.
 //   bit 0        Fast Copy
 //   bit 1        Dismiss Spotlight after opening a result
+//   bit 2        Load into app extensions (share sheet, widgets, ...)
 //   bits 16-31   Fast Page Transitions duration in ms (0 = off)
 
 static const char *const kSBTAppStateName = "cz.kolbi.sbtweaker/appState";
 #define SBT_APP_FAST_COPY          (1ULL << 0)
 #define SBT_APP_DISMISS_SPOTLIGHT  (1ULL << 1)
+#define SBT_APP_EXTENSIONS         (1ULL << 2)
 #define SBT_APP_SLIDE_SHIFT        16
 static const double kNSMinDuration = 0.01, kNSMaxDuration = 1.0;
 
@@ -1507,6 +1509,7 @@ static void sbt_publish_app_state(void) {
     uint64_t state = 0;
     if (sbc_pref_bool_live(CFSTR("fastCopy"))) state |= SBT_APP_FAST_COPY;
     if (sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"))) state |= SBT_APP_DISMISS_SPOTLIGHT;
+    if (sbc_pref_bool_live(CFSTR("extensionsEnabled"))) state |= SBT_APP_EXTENSIONS;
     if (sbc_pref_bool_live(CFSTR("noSlide"))) {
         double d = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
         state |= (uint64_t)llround(d * 1000.0) << SBT_APP_SLIDE_SHIFT;
@@ -2076,11 +2079,15 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 
 %ctor {
     // The filter injects into every UIKit process. Daemons without a bundle
-    // and app extensions (share sheet, keyboards, widgets) need none of this,
-    // and skipping them keeps their cold start untouched.
+    // need none of this. App extensions (share sheet, widgets, iMessage apps)
+    // load the hooks only while "App Extensions" is on; an extension process
+    // usually starts fresh each time it opens, so the switch applies on the
+    // next open.
     NSBundle *bundle = [NSBundle mainBundle];
     NSString *bundleID = bundle.bundleIdentifier;
-    if (!bundleID || [bundle.bundlePath hasSuffix:@".appex"]) return;
+    if (!bundleID) return;
+    if ([bundle.bundlePath hasSuffix:@".appex"] &&
+        !(sbt_app_state() & SBT_APP_EXTENSIONS)) return;
     sbt_is_springboard = [bundleID isEqualToString:@"com.apple.springboard"];
 
     // Hooks that act inside apps; their switches come from the app state
