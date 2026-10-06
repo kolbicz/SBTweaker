@@ -1462,12 +1462,16 @@ static BOOL sbt_is_springboard = NO;
 //   bit 0        Fast Copy
 //   bit 1        Dismiss Spotlight after opening a result
 //   bit 2        Load into app extensions (share sheet, widgets, ...)
-//   bits 16-31   Fast Page Transitions duration in ms (0 = off)
+//   bit 3        Fast Page Transitions
+//   bit 4        Fast Share Sheet
+//   bits 16-31   Transition Duration in ms, shared by bits 3 and 4
 
 static const char *const kSBTAppStateName = "cz.kolbi.sbtweaker/appState";
 #define SBT_APP_FAST_COPY          (1ULL << 0)
 #define SBT_APP_DISMISS_SPOTLIGHT  (1ULL << 1)
 #define SBT_APP_EXTENSIONS         (1ULL << 2)
+#define SBT_APP_PAGE_TRANSITIONS   (1ULL << 3)
+#define SBT_APP_SHARE_SHEET        (1ULL << 4)
 #define SBT_APP_SLIDE_SHIFT        16
 static const double kNSMinDuration = 0.01, kNSMaxDuration = 1.0;
 
@@ -1510,10 +1514,10 @@ static void sbt_publish_app_state(void) {
     if (sbc_pref_bool_live(CFSTR("fastCopy"))) state |= SBT_APP_FAST_COPY;
     if (sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"))) state |= SBT_APP_DISMISS_SPOTLIGHT;
     if (sbc_pref_bool_live(CFSTR("extensionsEnabled"))) state |= SBT_APP_EXTENSIONS;
-    if (sbc_pref_bool_live(CFSTR("noSlide"))) {
-        double d = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
-        state |= (uint64_t)llround(d * 1000.0) << SBT_APP_SLIDE_SHIFT;
-    }
+    if (sbc_pref_bool_live(CFSTR("noSlide"))) state |= SBT_APP_PAGE_TRANSITIONS;
+    if (sbc_pref_bool_live(CFSTR("fastShareSheet"))) state |= SBT_APP_SHARE_SHEET;
+    double d = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
+    state |= (uint64_t)llround(d * 1000.0) << SBT_APP_SLIDE_SHIFT;
     notify_set_state(token, state);
     notify_post(kSBTAppStateName);
 }
@@ -1546,12 +1550,18 @@ static void sbt_publish_app_state(void) {
 // The duration comes from the published app state (see above), read at each
 // push/pop, so changes apply without a respring.
 
-// Target duration in seconds, or 0 when the option is off (or the state
-// cannot be read, in which case nothing changes).
-static double ns_targetDuration(void) {
-    uint64_t ms = (sbt_app_state() >> SBT_APP_SLIDE_SHIFT) & 0xFFFF;
+// Target duration in seconds when `feature` is on, otherwise 0 (also when the
+// state cannot be read, in which case nothing changes).
+static double ns_durationFor(uint64_t feature) {
+    uint64_t state = sbt_app_state();
+    if (!(state & feature)) return 0;
+    uint64_t ms = (state >> SBT_APP_SLIDE_SHIFT) & 0xFFFF;
     if (ms == 0) return 0;
     return MIN(kNSMaxDuration, MAX(kNSMinDuration, ms / 1000.0));
+}
+
+static double ns_targetDuration(void) {
+    return ns_durationFor(SBT_APP_PAGE_TRANSITIONS);
 }
 
 static BOOL ns_clamping = NO;
@@ -1806,6 +1816,42 @@ static void ns_hookNavigationDelegateClass(Class cls) {
 - (void)animationEnded:(BOOL)completed {
     objc_setAssociatedObject(self, &kNSDecidedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     %orig;
+}
+%end
+
+// ------------------------------------------------ fast share sheet
+//
+// The share sheet's slide-up is an ordinary sheet presentation run by the app
+// that presents UIActivityViewController; only its contents come from the
+// share sheet extension. The same clamp window covers it: from present/dismiss
+// until UIKit calls the completion (3 s at most, which also spans the wait
+// while iOS starts the share sheet process). Swipe-to-dismiss is interactive
+// and never goes through dismissViewControllerAnimated:, so it is untouched.
+
+static void (^ns_clampedCompletion(void (^completion)(void)))(void) {
+    double d = ns_durationFor(SBT_APP_SHARE_SHEET);
+    if (d <= 0) return nil;
+    NSUInteger token = ns_startClamp(d);
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ ns_endClamp(token); });
+    return ^{
+        ns_endClamp(token);
+        if (completion) completion();
+    };
+}
+
+%hook UIViewController
+- (void)presentViewController:(UIViewController *)vc animated:(BOOL)animated completion:(void (^)(void))completion {
+    void (^wrapped)(void) = (animated && [vc isKindOfClass:[UIActivityViewController class]])
+        ? ns_clampedCompletion(completion) : nil;
+    %orig(vc, animated, wrapped ?: completion);
+}
+
+- (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
+    UIViewController *target = self.presentedViewController ?: self;
+    void (^wrapped)(void) = (animated && [target isKindOfClass:[UIActivityViewController class]])
+        ? ns_clampedCompletion(completion) : nil;
+    %orig(animated, wrapped ?: completion);
 }
 %end
 

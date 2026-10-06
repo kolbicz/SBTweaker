@@ -35,9 +35,10 @@ These are in-process Substrate-hook reimplementations of my
   - Disable Screen Off Fade (screen off)
   - Disable Unlock Icon Fly-In
   - Fast Copy (the copy/paste menu appears instantly — also inside apps)
-- **Page Transitions**: Fast Page Transitions with Transition Duration
-  (0.01–1.00 s, default 0.01 = instant) speeds up the slide when an app opens a
-  new page or goes back, including app-provided transitions; swipe-back is
+- **Transitions**: Fast Page Transitions and Fast Share Sheet with a shared
+  Transition Duration (0.01–1.00 s, default 0.01 = instant) speed up the slide
+  when an app opens a new page or goes back, including app-provided
+  transitions, and the share sheet sliding up and closing; swipe gestures are
   unchanged and changes apply without a respring
 
 All settings live in Settings → SBTweaker. Every feature is opt-in and off by
@@ -46,6 +47,10 @@ apply live, and a respring button is included for changes that need one.
 
 ## Version 1.3.7
 
+- Added Fast Share Sheet. Presenting or dismissing `UIActivityViewController`
+  (not swipe-to-dismiss) opens the same clamp window as a page transition,
+  closed by the presentation's completion or after 3 s. Fast Page Transitions
+  and Fast Share Sheet now have their own bits and share the duration field.
 - Fast Copy also makes the copy/paste menu's own animations instant: any
   animation added inside `UICalloutBar` (iOS 15) or `_UIEditMenuContainerView`
   / `_UIEditMenuListView` (iOS 16+) is sped up, independent of the

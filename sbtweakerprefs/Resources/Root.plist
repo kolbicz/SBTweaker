@@ -274,9 +274,9 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>Page Transitions</string>
+			<string>Transitions</string>
 			<key>footerText</key>
-			<string>Speeds up the slide when an app opens a new page — a chat, a post, a settings page — and when you go back. Transition Duration is the longest the slide may take: 0.01 is instant, 1.00 is about stock speed. Swiping back still follows your finger. Changes apply right away, no respring needed.</string>
+			<string>Fast Page Transitions speeds up the slide when an app opens a new page — a chat, a post, a settings page — and when you go back. Fast Share Sheet speeds up the share sheet sliding up and closing; the short wait while iOS starts the share sheet stays. Transition Duration is the longest either may take: 0.01 is instant, 1.00 is about stock speed. Swiping back or down still follows your finger. Changes apply right away, no respring needed.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -287,6 +287,18 @@
 			<string>noSlide</string>
 			<key>label</key>
 			<string>Fast Page Transitions</string>
+			<key>default</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>fastShareSheet</string>
+			<key>label</key>
+			<string>Fast Share Sheet</string>
 			<key>default</key>
 			<false/>
 		</dict>
@@ -312,7 +324,7 @@
 			<key>label</key>
 			<string>App Extensions</string>
 			<key>footerText</key>
-			<string>Also applies Fast Page Transitions and Fast Copy inside app extensions — the share sheet, widgets, iMessage apps and other system panels shown inside apps. Turn off to keep SBTweaker out of extensions entirely. Takes effect the next time an extension opens.</string>
+			<string>Also applies Fast Page Transitions, Fast Share Sheet and Fast Copy inside app extensions — the share sheet, widgets, iMessage apps and other system panels shown inside apps. Turn off to keep SBTweaker out of extensions entirely. Takes effect the next time an extension opens.</string>
 		</dict>
 		<dict>
 			<key>cell</key>

@@ -2,6 +2,9 @@
 
 ## 1.3.7
 
+- Added an opt-in Fast Share Sheet switch: the share sheet slides up and
+  closes as fast as Transition Duration allows. The short wait while iOS
+  starts the share sheet itself is unchanged.
 - Fast Copy now also removes the copy/paste menu's appear and disappear
   animation, not just the delay before it shows.
 - Fixed Fast Copy and the Spotlight option not working in sandboxed apps
