@@ -1462,14 +1462,14 @@ static BOOL sbt_is_springboard = NO;
 //   bit 0        Fast Copy
 //   bit 1        Dismiss Spotlight after opening a result
 //   bit 3        Fast Page Transitions
-//   bit 4        Fast Share Sheet
+//   bit 4        Fast Sheets
 //   bits 16-31   Transition Duration in ms, shared by bits 3 and 4
 
 static const char *const kSBTAppStateName = "cz.kolbi.sbtweaker/appState";
 #define SBT_APP_FAST_COPY          (1ULL << 0)
 #define SBT_APP_DISMISS_SPOTLIGHT  (1ULL << 1)
 #define SBT_APP_PAGE_TRANSITIONS   (1ULL << 3)
-#define SBT_APP_SHARE_SHEET        (1ULL << 4)
+#define SBT_APP_SHEETS             (1ULL << 4)
 #define SBT_APP_SLIDE_SHIFT        16
 static const double kNSMinDuration = 0.01, kNSMaxDuration = 1.0;
 
@@ -1512,7 +1512,7 @@ static void sbt_publish_app_state(void) {
     if (sbc_pref_bool_live(CFSTR("fastCopy"))) state |= SBT_APP_FAST_COPY;
     if (sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"))) state |= SBT_APP_DISMISS_SPOTLIGHT;
     if (sbc_pref_bool_live(CFSTR("noSlide"))) state |= SBT_APP_PAGE_TRANSITIONS;
-    if (sbc_pref_bool_live(CFSTR("fastShareSheet"))) state |= SBT_APP_SHARE_SHEET;
+    if (sbc_pref_bool_live(CFSTR("fastSheets"))) state |= SBT_APP_SHEETS;
     double d = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
     state |= (uint64_t)llround(d * 1000.0) << SBT_APP_SLIDE_SHIFT;
     notify_set_state(token, state);
@@ -1816,17 +1816,18 @@ static void ns_hookNavigationDelegateClass(Class cls) {
 }
 %end
 
-// ------------------------------------------------ fast share sheet
+// ------------------------------------------------ fast sheets
 //
-// The share sheet's slide-up is an ordinary sheet presentation run by the app
-// that presents UIActivityViewController; only its contents come from the
-// share sheet extension. The same clamp window covers it: from present/dismiss
-// until UIKit calls the completion (3 s at most, which also spans the wait
-// while iOS starts the share sheet process). Swipe-to-dismiss is interactive
-// and never goes through dismissViewControllerAnimated:, so it is untouched.
+// Modal presentations — the share sheet and the AirDrop page it opens,
+// compose screens, alerts, full-screen modals — slide up and down through
+// presentViewController:/dismissViewControllerAnimated:. The same clamp window
+// as a page transition covers them: from the call until UIKit runs the
+// completion (3 s at most, which also spans the wait while iOS starts the
+// share sheet process). Swipe-to-dismiss is interactive and never goes through
+// dismissViewControllerAnimated:, so it is untouched.
 
 static void (^ns_clampedCompletion(void (^completion)(void)))(void) {
-    double d = ns_durationFor(SBT_APP_SHARE_SHEET);
+    double d = ns_durationFor(SBT_APP_SHEETS);
     if (d <= 0) return nil;
     NSUInteger token = ns_startClamp(d);
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(3.0 * NSEC_PER_SEC)),
@@ -1839,15 +1840,18 @@ static void (^ns_clampedCompletion(void (^completion)(void)))(void) {
 
 %hook UIViewController
 - (void)presentViewController:(UIViewController *)vc animated:(BOOL)animated completion:(void (^)(void))completion {
-    void (^wrapped)(void) = (animated && [vc isKindOfClass:[UIActivityViewController class]])
-        ? ns_clampedCompletion(completion) : nil;
+    // UIKit refuses (without calling completion) while this controller is
+    // already presenting something that is not on its way out.
+    UIViewController *current = self.presentedViewController;
+    BOOL willPresent = vc && (!current || current.isBeingDismissed);
+    void (^wrapped)(void) = (animated && willPresent) ? ns_clampedCompletion(completion) : nil;
     %orig(vc, animated, wrapped ?: completion);
 }
 
 - (void)dismissViewControllerAnimated:(BOOL)animated completion:(void (^)(void))completion {
-    UIViewController *target = self.presentedViewController ?: self;
-    void (^wrapped)(void) = (animated && [target isKindOfClass:[UIActivityViewController class]])
-        ? ns_clampedCompletion(completion) : nil;
+    // Only when there is something to dismiss: presented by us, or presented.
+    BOOL willDismiss = self.presentedViewController || self.presentingViewController;
+    void (^wrapped)(void) = (animated && willDismiss) ? ns_clampedCompletion(completion) : nil;
     %orig(animated, wrapped ?: completion);
 }
 %end

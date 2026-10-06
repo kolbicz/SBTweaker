@@ -2,9 +2,10 @@
 
 ## 1.3.7
 
-- Added an opt-in Fast Share Sheet switch: the share sheet slides up and
-  closes as fast as Transition Duration allows. The short wait while iOS
-  starts the share sheet itself is unchanged.
+- Added an opt-in Fast Sheets switch: sheets and pop-ups — the share sheet
+  and its AirDrop page, compose screens, alerts — slide up and close as fast
+  as Transition Duration allows. Swiping a sheet down is unchanged, as is the
+  short wait while iOS starts the share sheet.
 - Fast Copy now also removes the copy/paste menu's appear and disappear
   animation, not just the delay before it shows.
 - Fixed Fast Copy and the Spotlight option not working in sandboxed apps
