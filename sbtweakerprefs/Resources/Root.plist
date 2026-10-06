@@ -276,7 +276,7 @@
 			<key>label</key>
 			<string>Transitions</string>
 			<key>footerText</key>
-			<string>Fast Page Transitions speeds up the slide when an app opens a new page — a chat, a post, a settings page — and when you go back. Fast Sheets speeds up sheets and pop-ups sliding up and closing — the share sheet and its AirDrop page, compose screens, alerts; the short wait while iOS starts the share sheet stays. Transition Duration is the longest either may take: 0.01 is instant, 1.00 is about stock speed. Swiping back or down still follows your finger. Changes apply right away, no respring needed.</string>
+			<string>Fast Page Transitions speeds up the slide when an app opens a new page — a chat, a post, a settings page — and when you go back. Fast Sheets speeds up sheets and pop-ups sliding up and closing — the share sheet and its AirDrop page, compose screens, alerts. Transition Duration is the longest either may take: 0.01 is instant, 1.00 is about stock speed. Swiping back or down still follows your finger. Changes apply right away, no respring needed.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
