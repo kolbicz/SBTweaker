@@ -2,6 +2,8 @@
 
 ## 1.3.7
 
+- Fast Copy now also removes the copy/paste menu's appear and disappear
+  animation, not just the delay before it shows.
 - Fixed Fast Copy and the Spotlight option not working in sandboxed apps
   (Messages, WhatsApp, Safari, the Spotlight UI), which cannot read the
   tweak's settings. SpringBoard now publishes every in-app switch to apps.

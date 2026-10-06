@@ -1488,6 +1488,18 @@ static uint64_t sbt_app_state(void) {
     return state;
 }
 
+// Same value, cached for hooks that run on every animation. Refreshed on the
+// main queue whenever SpringBoard republishes.
+static uint64_t sbt_cached_app_state = 0;
+
+static void sbt_watch_app_state(void) {
+    sbt_cached_app_state = sbt_app_state();
+    int watchToken;
+    notify_register_dispatch(kSBTAppStateName, &watchToken, dispatch_get_main_queue(), ^(int t) {
+        sbt_cached_app_state = sbt_app_state();
+    });
+}
+
 // SpringBoard only.
 static void sbt_publish_app_state(void) {
     int token = sbt_app_state_token();
@@ -1504,7 +1516,8 @@ static void sbt_publish_app_state(void) {
 }
 
 // Fast Copy: show the copy/paste callout bar immediately instead of after
-// UIKit's built-in delay. Inspired by the classic Fast Copy tweak. Fires in
+// UIKit's built-in delay (its appear/disappear animation is removed by the
+// CALayer hook below). Inspired by the classic Fast Copy tweak. Fires in
 // SpringBoard and every app; the switch comes from the published app state.
 %group FastCopy
 %hook UITextSelectionView
@@ -1555,12 +1568,12 @@ static BOOL ns_clampable(CAAnimation *anim) {
     return YES;
 }
 
-static void ns_clampAnimation(CAAnimation *anim) {
+static void ns_clampAnimation(CAAnimation *anim, CFTimeInterval target) {
     if (!ns_clampable(anim)) return;
     // Speed the animation up to fit instead of cutting it short, so a spring
     // still settles naturally at longer configured durations.
     CFTimeInterval active = anim.duration / anim.speed;
-    if (active > ns_clampDuration) anim.speed = (float)(anim.duration / ns_clampDuration);
+    if (active > target) anim.speed = (float)(anim.duration / target);
     // Drop delays too. A delayed animation (e.g. a navigation bar fade that
     // starts a little after the slide) otherwise shows its from-state until
     // the delay runs out — a one-frame flash once everything else is quick.
@@ -1569,14 +1582,47 @@ static void ns_clampAnimation(CAAnimation *anim) {
     anim.timeOffset = 0;
 }
 
-%group NoSlide
+// Fast Copy, part two: the copy/paste menu also appears and disappears
+// without its fade/zoom. Rather than hooking the presentation methods, which
+// differ per iOS version, any animation added to a layer inside the menu's
+// own views is made instant: UICalloutBar (iOS 15), _UIEditMenuContainerView
+// and _UIEditMenuListView (iOS 16+).
+static BOOL sbt_layer_in_edit_menu(CALayer *layer) {
+    static Class classes[3];
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        classes[0] = objc_getClass("UICalloutBar");
+        classes[1] = objc_getClass("_UIEditMenuContainerView");
+        classes[2] = objc_getClass("_UIEditMenuListView");
+    });
+    int depth = 0;
+    for (CALayer *l = layer; l && depth < 12; l = l.superlayer, depth++) {
+        id view = l.delegate;
+        if (![view isKindOfClass:[UIView class]]) continue;
+        for (int i = 0; i < 3; i++)
+            if (classes[i] && [view isKindOfClass:classes[i]]) return YES;
+    }
+    return NO;
+}
 
+static const CFTimeInterval kSBTMenuDuration = 0.01;
+
+// One hook for both features; installed in SpringBoard and apps.
+%group Layer
 %hook CALayer
 - (void)addAnimation:(CAAnimation *)anim forKey:(NSString *)key {
-    if (ns_clamping && anim && [NSThread isMainThread]) ns_clampAnimation(anim);
+    if (anim && [NSThread isMainThread]) {
+        if (ns_clamping)
+            ns_clampAnimation(anim, ns_clampDuration);
+        else if ((sbt_cached_app_state & SBT_APP_FAST_COPY) && sbt_layer_in_edit_menu(self))
+            ns_clampAnimation(anim, kSBTMenuDuration);
+    }
     %orig;
 }
 %end
+%end
+
+%group NoSlide
 
 static NSUInteger ns_startClamp(double duration) {
     ns_clamping = YES;
@@ -2040,7 +2086,9 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
     // Hooks that act inside apps; their switches come from the app state
     // SpringBoard publishes. The Spotlight hooks only find their class in the
     // Spotlight UI process.
+    sbt_watch_app_state();
     %init(FastCopy);
+    %init(Layer);
     %init(Spotlight);
     if (!sbt_is_springboard) {
         ns_hooked = [NSMutableSet set];

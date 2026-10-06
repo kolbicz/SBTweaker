@@ -46,6 +46,10 @@ apply live, and a respring button is included for changes that need one.
 
 ## Version 1.3.7
 
+- Fast Copy also makes the copy/paste menu's own animations instant: any
+  animation added inside `UICalloutBar` (iOS 15) or `_UIEditMenuContainerView`
+  / `_UIEditMenuListView` (iOS 16+) is sped up, independent of the
+  presentation methods, which differ per iOS version.
 - Fast Copy and the Spotlight option now work in sandboxed apps. Their
   switches, together with Fast Page Transitions, reach apps as one 64-bit
   Darwin notification state that SpringBoard republishes at launch and on
