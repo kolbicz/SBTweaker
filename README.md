@@ -64,9 +64,7 @@ apply live, and a respring button is included for changes that need one.
   other apps can no longer trigger a respring.
 - Missing preference keys fall back to `SBTDefaults.h` in the tweak as well.
 - SpringBoard-only hooks moved into their own group, and daemons without a
-  bundle get no hooks at all. App extensions load the app-side hooks only
-  while the new Apply in App Extensions switch is on (default); the extension
-  reads that bit from the published app state in its constructor.
+  bundle get no hooks at all.
 - The Lock Screen double-tap checks for passcode UI only when a double-tap is
   recognized, and configs identified as neither Home Screen nor Dock are
   cached so their getters skip the layout provider.

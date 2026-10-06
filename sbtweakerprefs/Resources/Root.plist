@@ -322,26 +322,6 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
-			<string>App Extensions</string>
-			<key>footerText</key>
-			<string>Also applies Fast Page Transitions, Fast Share Sheet and Fast Copy inside app extensions — the share sheet, widgets, iMessage apps and other system panels shown inside apps. Turn off to keep SBTweaker out of extensions entirely. Takes effect the next time an extension opens.</string>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSSwitchCell</string>
-			<key>defaults</key>
-			<string>cz.kolbi.sbtweaker</string>
-			<key>key</key>
-			<string>extensionsEnabled</string>
-			<key>label</key>
-			<string>Apply in App Extensions</string>
-			<key>default</key>
-			<true/>
-		</dict>
-		<dict>
-			<key>cell</key>
-			<string>PSGroupCell</string>
-			<key>label</key>
 			<string>Spotlight</string>
 			<key>footerText</key>
 			<string>Dismisses Spotlight and clears the search field once you open a result, so leaving that app returns you to the Home Screen instead of the search you came from. Without it, iOS keeps Spotlight presented behind the app and remembers the query for eight minutes.</string>

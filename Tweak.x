@@ -1461,7 +1461,6 @@ static BOOL sbt_is_springboard = NO;
 // pane, so app-side switches apply without a respring.
 //   bit 0        Fast Copy
 //   bit 1        Dismiss Spotlight after opening a result
-//   bit 2        Load into app extensions (share sheet, widgets, ...)
 //   bit 3        Fast Page Transitions
 //   bit 4        Fast Share Sheet
 //   bits 16-31   Transition Duration in ms, shared by bits 3 and 4
@@ -1469,7 +1468,6 @@ static BOOL sbt_is_springboard = NO;
 static const char *const kSBTAppStateName = "cz.kolbi.sbtweaker/appState";
 #define SBT_APP_FAST_COPY          (1ULL << 0)
 #define SBT_APP_DISMISS_SPOTLIGHT  (1ULL << 1)
-#define SBT_APP_EXTENSIONS         (1ULL << 2)
 #define SBT_APP_PAGE_TRANSITIONS   (1ULL << 3)
 #define SBT_APP_SHARE_SHEET        (1ULL << 4)
 #define SBT_APP_SLIDE_SHIFT        16
@@ -1513,7 +1511,6 @@ static void sbt_publish_app_state(void) {
     uint64_t state = 0;
     if (sbc_pref_bool_live(CFSTR("fastCopy"))) state |= SBT_APP_FAST_COPY;
     if (sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"))) state |= SBT_APP_DISMISS_SPOTLIGHT;
-    if (sbc_pref_bool_live(CFSTR("extensionsEnabled"))) state |= SBT_APP_EXTENSIONS;
     if (sbc_pref_bool_live(CFSTR("noSlide"))) state |= SBT_APP_PAGE_TRANSITIONS;
     if (sbc_pref_bool_live(CFSTR("fastShareSheet"))) state |= SBT_APP_SHARE_SHEET;
     double d = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
@@ -2125,15 +2122,10 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 
 %ctor {
     // The filter injects into every UIKit process. Daemons without a bundle
-    // need none of this. App extensions (share sheet, widgets, iMessage apps)
-    // load the hooks only while "App Extensions" is on; an extension process
-    // usually starts fresh each time it opens, so the switch applies on the
-    // next open.
-    NSBundle *bundle = [NSBundle mainBundle];
-    NSString *bundleID = bundle.bundleIdentifier;
+    // need none of this; apps and app extensions (share sheet, widgets,
+    // iMessage apps) get the app-side hooks.
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
     if (!bundleID) return;
-    if ([bundle.bundlePath hasSuffix:@".appex"] &&
-        !(sbt_app_state() & SBT_APP_EXTENSIONS)) return;
     sbt_is_springboard = [bundleID isEqualToString:@"com.apple.springboard"];
 
     // Hooks that act inside apps; their switches come from the app state

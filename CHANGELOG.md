@@ -15,9 +15,6 @@
 - The tweak now uses the same defaults as the Settings pane everywhere; the
   built-in fallbacks for the Dock count, spacing and icon scale disagreed.
 - SpringBoard-only code no longer loads into apps, so apps start faster.
-- Added an Apply in App Extensions switch (on by default). Turning it off keeps
-  SBTweaker out of extensions such as the share sheet, widgets and iMessage
-  apps entirely.
 - Double-tap to lock on the Lock Screen no longer scans the whole screen on
   every touch, and Home Screen layout passes avoid repeated lookups for App
   Library and folder grids.
