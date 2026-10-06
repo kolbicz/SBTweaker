@@ -1,7 +1,7 @@
 #import <UIKit/UIKit.h>
 
 static CFStringRef const SBTPreferencesDomain = CFSTR("cz.kolbi.sbtweaker");
-static NSInteger const SBTDefaultsVersion = 14;
+static NSInteger const SBTDefaultsVersion = 15;
 
 static inline NSDictionary *SBTDefaultValues(void) {
     static NSDictionary *values = nil;
@@ -44,8 +44,9 @@ static inline NSDictionary *SBTDefaultValues(void) {
             @"noWakeAnim": @NO,
             @"noSleepFade": @NO,
             @"noIconsFlyIn": @NO,
-            @"fasterCoreAnimation": @NO,
             @"fastCopy": @NO,
+            @"noSlide": @NO,
+            @"noSlideDuration": @0.01,
             @"dismissSpotlightAfterResult": @NO,
             @"lockScreenDurationEnabled": @NO,
             @"lockScreenDuration": @30.0,

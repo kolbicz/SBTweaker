@@ -7,6 +7,8 @@
 #import <stdint.h>
 #import <stdbool.h>
 #import <math.h>
+#import <notify.h>
+#import <QuartzCore/QuartzCore.h>
 #import "SBTDefaults.h"
 #ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
 #import <roothide.h>
@@ -18,8 +20,8 @@
 //  - darksword_layout.m: spacing & icon scaling
 //  - darksword disable_app_library(): hide App Library
 //  - darksword_tweaks.m double-tap-to-lock: home & lock screen gestures
-//  - FastAnimations: core animation clamp & Fast Copy callout (these two
-//    also load into UIKit and UIKitCore application processes)
+//  - Fast Copy callout (also loads into UIKit application processes)
+//  - Fast Page Transitions: navigation slide inside apps (app processes only)
 //
 // Icon arrangement and add-to-dock from the original sbcustomizer.m were
 // dropped.
@@ -455,7 +457,7 @@ static NSDictionary *sbc_reload_prefs(void) {
 }
 
 static NSDictionary *sbc_prefs(void) {
-    // Hot hooks such as CATransaction must not make a cfprefsd round-trip on
+    // Hot hooks must not make a cfprefsd round-trip on
     // every call. Refresh at most once per second so switches still feel live.
     if (!sbc_cachedPrefs || CFAbsoluteTimeGetCurrent() - sbc_prefs_loaded_at >= 1.0)
         sbc_reload_prefs();
@@ -1390,34 +1392,8 @@ static BOOL sbt_transition_is_wake = YES;
 }
 %end
 
-// Faster Core Animation: clamp every explicit CA transaction duration to
-// near zero. Injection equivalent of the FastAnimations hook — the
-// DarkSword/cyanide variant uses CALayer.speed on all SpringBoard windows
-// instead, because a remote call cannot hook.
+// Set in %ctor; the filter also injects into every UIKit app process.
 static BOOL sbt_is_springboard = NO;
-
-static inline double sbt_scaled_duration(double original) {
-    if (original <= 0.0)  return 0.0;
-    if (original <= 0.05) return original;
-    return 0.01;
-}
-
-%hook CATransaction
-+ (void)setAnimationDuration:(double)arg1 {
-    if (sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), NO))
-        %orig(sbt_scaled_duration(arg1));
-    else
-        %orig(arg1);
-}
-// FastAnimations parity: kill implicit animations inside apps entirely.
-// SpringBoard legitimately toggles disableActions itself, so pass through.
-+ (void)setDisableActions:(BOOL)arg1 {
-    if (!sbc_pref_bool_live(CFSTR("fasterCoreAnimation"), NO) || sbt_is_springboard)
-        %orig(arg1);
-    else
-        %orig(YES);
-}
-%end
 
 // Fast Copy: show the copy/paste callout bar immediately instead of after
 // UIKit's built-in delay. Inspired by the classic Fast Copy tweak. Fires in
@@ -1427,6 +1403,280 @@ static inline double sbt_scaled_duration(double original) {
     %orig(sbc_pref_bool_live(CFSTR("fastCopy"), NO) ? 0 : arg1);
 }
 %end
+
+// ------------------------------------------------ fast page transitions
+//
+// Removes (or shortens) the push/pop slide inside apps: opening a
+// conversation in Messages or WhatsApp, a post in Reddit, a settings row.
+// Modal sheets, full-screen effects and every other animation keep their
+// stock timing; a swipe-back is never touched.
+//
+// Forcing animated:NO on push/pop breaks apps (Reddit lost its back controls)
+// because they rely on the animated code path: transition coordinator,
+// viewWillAppear: with animated=YES, alongside animations. Instead the
+// transition runs exactly as stock and the Core Animation animations added
+// while it is set up are sped up to fit the configured duration.
+//
+// Sandboxed apps cannot read this tweak's preferences domain, so SpringBoard
+// publishes the setting as the state of a Darwin notification: 0 = off,
+// otherwise the duration in milliseconds. Apps read it at each push/pop, so
+// changes apply without a respring.
+
+static const char *const kNSStateName = "cz.kolbi.sbtweaker/noSlide";
+static const double kNSMinDuration = 0.01, kNSMaxDuration = 1.0;
+
+static void sbt_publish_noslide_state(void) {
+    static int token = NOTIFY_TOKEN_INVALID;
+    if (token == NOTIFY_TOKEN_INVALID &&
+        notify_register_check(kNSStateName, &token) != NOTIFY_STATUS_OK) {
+        token = NOTIFY_TOKEN_INVALID;
+        return;
+    }
+    uint64_t state = 0;
+    if (sbc_pref_bool_live(CFSTR("noSlide"), NO)) {
+        double d = sbc_pref_double_live(CFSTR("noSlideDuration"), kNSMinDuration);
+        state = (uint64_t)llround(MIN(kNSMaxDuration, MAX(kNSMinDuration, d)) * 1000.0);
+    }
+    notify_set_state(token, state);
+    notify_post(kNSStateName);
+}
+
+// Target duration in seconds, or 0 when the option is off (or the state
+// cannot be read, in which case nothing changes).
+static double ns_targetDuration(void) {
+    static int token = NOTIFY_TOKEN_INVALID;
+    if (token == NOTIFY_TOKEN_INVALID &&
+        notify_register_check(kNSStateName, &token) != NOTIFY_STATUS_OK) {
+        token = NOTIFY_TOKEN_INVALID;
+        return 0;
+    }
+    uint64_t state = 0;
+    if (notify_get_state(token, &state) != NOTIFY_STATUS_OK || state == 0) return 0;
+    return MIN(kNSMaxDuration, MAX(kNSMinDuration, state / 1000.0));
+}
+
+static BOOL ns_clamping = NO;
+static double ns_clampDuration = 0;
+static NSUInteger ns_clampToken = 0;
+
+static BOOL ns_clampable(CAAnimation *anim) {
+    // Only plain finite timing animations (and groups of them). Anything
+    // else — iOS 26 Liquid Glass "match" animations (infinite by design),
+    // emitters, repeating spinners — is left alone; speeding those up breaks
+    // controls.
+    if (![anim isKindOfClass:[CABasicAnimation class]] &&
+        ![anim isKindOfClass:[CAKeyframeAnimation class]] &&
+        ![anim isKindOfClass:[CAAnimationGroup class]]) return NO;
+    if (!isfinite(anim.duration) || anim.duration > 2.0 || anim.speed <= 0) return NO;
+    if (anim.repeatCount > 0 || anim.repeatDuration > 0 || anim.autoreverses) return NO;
+    return YES;
+}
+
+static void ns_clampAnimation(CAAnimation *anim) {
+    if (!ns_clampable(anim)) return;
+    // Speed the animation up to fit instead of cutting it short, so a spring
+    // still settles naturally at longer configured durations.
+    CFTimeInterval active = anim.duration / anim.speed;
+    if (active > ns_clampDuration) anim.speed = (float)(anim.duration / ns_clampDuration);
+    // Drop delays too. A delayed animation (e.g. a navigation bar fade that
+    // starts a little after the slide) otherwise shows its from-state until
+    // the delay runs out — a one-frame flash once everything else is quick.
+    // Delays inside a group are scaled by the group's speed already.
+    if (anim.beginTime > 0) anim.beginTime = 0;
+    anim.timeOffset = 0;
+}
+
+%group NoSlide
+
+%hook CALayer
+- (void)addAnimation:(CAAnimation *)anim forKey:(NSString *)key {
+    if (ns_clamping && anim && [NSThread isMainThread]) ns_clampAnimation(anim);
+    %orig;
+}
+%end
+
+static NSUInteger ns_startClamp(double duration) {
+    ns_clamping = YES;
+    ns_clampDuration = duration;
+    return ++ns_clampToken;
+}
+
+static void ns_endClamp(NSUInteger token) {
+    if (ns_clampToken == token) ns_clamping = NO;
+}
+
+// Called when a transition's animator actually runs. A swipe-back is
+// interactive and is never touched, so it tracks the finger and can still be
+// cancelled — that also cancels a window opened by the push/pop hooks.
+// Otherwise clamping stays on at least for the rest of this run-loop turn,
+// which covers the whole synchronous transition setup.
+static void ns_beginClamp(id<UIViewControllerContextTransitioning> ctx) {
+    if (!ctx) return;
+    if ([ctx isInteractive]) { ns_clamping = NO; ns_clampToken++; return; }
+    if (ns_clamping) return;
+    double d = ns_targetDuration();
+    if (d <= 0) return;
+    NSUInteger token = ns_startClamp(d);
+    dispatch_async(dispatch_get_main_queue(), ^{ ns_endClamp(token); });
+}
+
+static BOOL ns_gestureActive(UIGestureRecognizer *gr) {
+    UIGestureRecognizerState st = gr.state;
+    return st == UIGestureRecognizerStateBegan || st == UIGestureRecognizerStateChanged;
+}
+
+// App-agnostic window: from an animated push/pop until the navigation
+// controller's transition completes. This catches transitions whose animator
+// can't be hooked — WhatsApp returns its own animator through a forwarding
+// delegate proxy. UIKit starts the transition a layout pass after push/pop
+// returns, so a single run-loop turn would be too short here.
+static void ns_clampNavTransition(UINavigationController *nc) {
+    if (ns_gestureActive(nc.interactivePopGestureRecognizer)) return;
+    id<UIViewControllerTransitionCoordinator> tc = nc.transitionCoordinator;
+    if (!tc || !tc.isAnimated || tc.isInteractive) return;
+    double d = ns_targetDuration();
+    if (d <= 0) return;
+    NSUInteger token = ns_startClamp(d);
+    [tc animateAlongsideTransition:nil completion:^(id<UIViewControllerTransitionCoordinatorContext> c) {
+        ns_endClamp(token);
+    }];
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)((d + 1.0) * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{ ns_endClamp(token); });
+}
+
+static char kNSDecidedKey;
+
+// The first time UIKit consults the stock transition decides.
+static void ns_decide(id transition, id<UIViewControllerContextTransitioning> ctx) {
+    if (objc_getAssociatedObject(transition, &kNSDecidedKey)) return;
+    objc_setAssociatedObject(transition, &kNSDecidedKey, @YES, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    ns_beginClamp(ctx);
+}
+
+static NSTimeInterval ns_cappedDuration(NSTimeInterval d, id<UIViewControllerContextTransitioning> ctx) {
+    if (!ctx || [ctx isInteractive]) return d;
+    double target = ns_targetDuration();
+    return target > 0 ? MIN(d, target) : d;
+}
+
+// ------------------------- app-provided transitions behind a real delegate
+//
+// Animator classes are only known at runtime, so they are hooked as they
+// show up: first the navigation delegate's class, then every animator class
+// it returns. Each replacement is a block that captures the exact original
+// IMP of the class it was installed on, so subclass/superclass pairs that
+// both get hooked and call super never recurse into each other.
+
+static NSMutableSet<NSValue *> *ns_hooked;
+
+static Class ns_definingClass(Class cls, SEL sel) {
+    for (Class c = cls; c; c = class_getSuperclass(c)) {
+        unsigned int n = 0;
+        Method *list = class_copyMethodList(c, &n);
+        BOOL found = NO;
+        for (unsigned int i = 0; i < n && !found; i++)
+            found = method_getName(list[i]) == sel;
+        free(list);
+        if (found) return c;
+    }
+    return Nil;
+}
+
+static void ns_hookOnce(Class cls, SEL sel, id (^makeBlock)(IMP orig)) {
+    Class def = ns_definingClass(cls, sel);
+    if (!def || def == objc_getClass("_UINavigationParallaxTransition")) return;
+    NSValue *key = [NSValue valueWithPointer:(__bridge const void *)def];
+    @synchronized (ns_hooked) {
+        if ([ns_hooked containsObject:key]) return;
+        [ns_hooked addObject:key];
+    }
+    Method m = class_getInstanceMethod(def, sel);
+    method_setImplementation(m, imp_implementationWithBlock(makeBlock(method_getImplementation(m))));
+}
+
+static void ns_hookAnimatorClass(Class cls) {
+    ns_hookOnce(cls, @selector(animateTransition:), ^id(IMP orig) {
+        return ^(id me, id<UIViewControllerContextTransitioning> ctx) {
+            ns_beginClamp(ctx);
+            ((void (*)(id, SEL, id))orig)(me, @selector(animateTransition:), ctx);
+        };
+    });
+    ns_hookOnce(cls, @selector(interruptibleAnimatorForTransition:), ^id(IMP orig) {
+        return ^id(id me, id<UIViewControllerContextTransitioning> ctx) {
+            ns_beginClamp(ctx);
+            return ((id (*)(id, SEL, id))orig)(me, @selector(interruptibleAnimatorForTransition:), ctx);
+        };
+    });
+    ns_hookOnce(cls, @selector(transitionDuration:), ^id(IMP orig) {
+        return ^NSTimeInterval(id me, id<UIViewControllerContextTransitioning> ctx) {
+            return ns_cappedDuration(((NSTimeInterval (*)(id, SEL, id))orig)(me, @selector(transitionDuration:), ctx), ctx);
+        };
+    });
+}
+
+static void ns_hookNavigationDelegateClass(Class cls) {
+    SEL sel = @selector(navigationController:animationControllerForOperation:fromViewController:toViewController:);
+    ns_hookOnce(cls, sel, ^id(IMP orig) {
+        return ^id(id me, UINavigationController *nc, UINavigationControllerOperation op,
+                   UIViewController *from, UIViewController *to) {
+            id animator = ((id (*)(id, SEL, id, UINavigationControllerOperation, id, id))orig)(me, sel, nc, op, from, to);
+            if (animator) ns_hookAnimatorClass(object_getClass(animator));
+            return animator;
+        };
+    });
+}
+
+%hook UINavigationController
+- (void)setDelegate:(id<UINavigationControllerDelegate>)delegate {
+    %orig;
+    if (delegate) ns_hookNavigationDelegateClass(object_getClass(delegate));
+}
+- (void)pushViewController:(UIViewController *)vc animated:(BOOL)animated {
+    %orig;
+    if (animated) ns_clampNavTransition(self);
+}
+- (UIViewController *)popViewControllerAnimated:(BOOL)animated {
+    UIViewController *r = %orig;
+    if (animated) ns_clampNavTransition(self);
+    return r;
+}
+- (NSArray *)popToViewController:(UIViewController *)vc animated:(BOOL)animated {
+    NSArray *r = %orig;
+    if (animated) ns_clampNavTransition(self);
+    return r;
+}
+- (NSArray *)popToRootViewControllerAnimated:(BOOL)animated {
+    NSArray *r = %orig;
+    if (animated) ns_clampNavTransition(self);
+    return r;
+}
+- (void)setViewControllers:(NSArray *)vcs animated:(BOOL)animated {
+    %orig;
+    if (animated) ns_clampNavTransition(self);
+}
+%end
+
+// UIKit's stock push/pop animator. iOS 15-17 size the slide and the
+// navigation bar animation from transitionDuration:.
+%hook _UINavigationParallaxTransition
+- (NSTimeInterval)transitionDuration:(id<UIViewControllerContextTransitioning>)ctx {
+    return ns_cappedDuration(%orig, ctx);
+}
+- (void)animateTransition:(id<UIViewControllerContextTransitioning>)ctx {
+    ns_decide(self, ctx);
+    %orig;
+}
+- (id<UIViewImplicitlyAnimating>)interruptibleAnimatorForTransition:(id<UIViewControllerContextTransitioning>)ctx {
+    ns_decide(self, ctx);
+    return %orig;
+}
+- (void)animationEnded:(BOOL)completed {
+    objc_setAssociatedObject(self, &kNSDecidedKey, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    %orig;
+}
+%end
+
+%end // NoSlide
 
 // ------------------------------------------------ lock screen idle timeout
 //
@@ -1624,6 +1874,7 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
         sbc_apply();
+        sbt_publish_noslide_state();
     });
 }
 
@@ -1635,6 +1886,7 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
     // instead of visibly correcting the layout three seconds later.
     sbc_apply();
     sbc_apply_drag_coefficient();
+    sbt_publish_noslide_state();
     // Restore before autosave gets any chance to replace the preserved
     // snapshot with SpringBoard's post-rejailbreak fallback arrangement.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
@@ -1665,13 +1917,24 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 }
 
 %ctor {
-    // The filter also injects into every UIKit app (needed for CA and
-    // text-callout hooks). Everything below is SpringBoard-only: seeding
+    // The filter also injects into every UIKit app (needed for the
+    // text-callout and page transition hooks). Everything below is SpringBoard-only: seeding
     // prefs from arbitrary apps is pointless, and the respring relay must
     // never call exitAndRelaunch: from inside a random app.
-    sbt_is_springboard = [[[NSBundle mainBundle] bundleIdentifier]
-                          isEqualToString:@"com.apple.springboard"];
-    if (!sbt_is_springboard) return;
+    // Ungrouped hooks load everywhere, as before. Calling %init(NoSlide)
+    // below stops Logos from initializing them implicitly, so do it here.
+    %init;
+    NSString *bundleID = [[NSBundle mainBundle] bundleIdentifier];
+    sbt_is_springboard = [bundleID isEqualToString:@"com.apple.springboard"];
+    if (!sbt_is_springboard) {
+        // Navigation slide hooks are app-only; whether they act is decided
+        // per transition from the state SpringBoard publishes.
+        if (bundleID) {
+            ns_hooked = [NSMutableSet set];
+            %init(NoSlide);
+        }
+        return;
+    }
 
     sbc_install_landscape_hooks();
     sbt_install_home_double_tap_hook();

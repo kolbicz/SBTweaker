@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.3.6
+
+- Added an opt-in Fast Page Transitions option with a Transition Duration
+  setting (0.01-1.00 s, default 0.01). It speeds up the slide when an app opens
+  a new page — a chat, a post, a settings page — or goes back, including apps
+  that provide their own transition, such as WhatsApp. Swipe-back is
+  unchanged, and changes apply without a respring.
+- Removed Faster Core Animation; Fast Page Transitions replaces it inside
+  apps.
+
 ## 1.3.5
 
 - Added an opt-in Lock Screen Timeout option that holds the Lock Screen awake

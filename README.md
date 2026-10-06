@@ -34,13 +34,28 @@ These are in-process Substrate-hook reimplementations of my
   - Disable Wake Animation (screen on)
   - Disable Screen Off Fade (screen off)
   - Disable Unlock Icon Fly-In
-  - Faster Core Animation (clamps Core Animation durations and disables
-    implicit animations — also inside apps)
   - Fast Copy (the copy/paste menu appears instantly — also inside apps)
+- **Page Transitions**: Fast Page Transitions with Transition Duration
+  (0.01–1.00 s, default 0.01 = instant) speeds up the slide when an app opens a
+  new page or goes back, including app-provided transitions; swipe-back is
+  unchanged and changes apply without a respring
 
 All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
+
+## Version 1.3.6
+
+- Added an opt-in Fast Page Transitions option. Instead of forcing
+  `animated:NO`, which breaks apps that set up their back controls during the
+  transition, the push/pop still runs as an animated transition and the
+  Core Animation animations added for it are sped up to fit Transition
+  Duration.
+  Sandboxed apps cannot read the preferences domain, so SpringBoard publishes
+  the value as a Darwin notification state that apps read per transition.
+- Removed Faster Core Animation. Fast Page Transitions replaces it inside
+  apps, where it usually could not read its setting anyway, and its blanket
+  disabling of implicit animations could break controls.
 
 ## Version 1.3.5
 

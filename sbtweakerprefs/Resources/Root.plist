@@ -197,7 +197,7 @@
 			<key>label</key>
 			<string>Animations</string>
 			<key>footerText</key>
-			<string>UIAnimationDragCoefficient — lower is faster. 1.0 is stock and leaves the system value untouched; a respring then restores stock behavior. Disable Wake Animation affects turning the screen on, Disable Screen Off Fade affects turning it off. Faster Core Animation and Fast Copy also apply inside apps and take effect immediately.</string>
+			<string>UIAnimationDragCoefficient — lower is faster. 1.0 is stock and leaves the system value untouched; a respring then restores stock behavior. Disable Wake Animation affects turning the screen on, Disable Screen Off Fade affects turning it off. Fast Copy also applies inside apps and takes effect immediately.</string>
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>
@@ -264,11 +264,19 @@
 			<key>defaults</key>
 			<string>cz.kolbi.sbtweaker</string>
 			<key>key</key>
-			<string>fasterCoreAnimation</string>
+			<string>fastCopy</string>
 			<key>label</key>
-			<string>Faster Core Animation</string>
+			<string>Fast Copy</string>
 			<key>default</key>
 			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>Page Transitions</string>
+			<key>footerText</key>
+			<string>Speeds up the slide when an app opens a new page — a chat, a post, a settings page — and when you go back. Transition Duration is the longest the slide may take: 0.01 is instant, 1.00 is about stock speed. Swiping back still follows your finger. Changes apply right away, no respring needed.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -276,11 +284,27 @@
 			<key>defaults</key>
 			<string>cz.kolbi.sbtweaker</string>
 			<key>key</key>
-			<string>fastCopy</string>
+			<string>noSlide</string>
 			<key>label</key>
-			<string>Fast Copy</string>
+			<string>Fast Page Transitions</string>
 			<key>default</key>
 			<false/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>SBTNumberCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>noSlideDuration</string>
+			<key>label</key>
+			<string>Transition Duration</string>
+			<key>min</key>
+			<real>0.01</real>
+			<key>max</key>
+			<real>1.00</real>
+			<key>default</key>
+			<real>0.01</real>
 		</dict>
 		<dict>
 			<key>cell</key>

@@ -1,11 +1,11 @@
 Package: cz.kolbi.sbtweaker
 Name: SBTweaker
-Version: 1.3.5
+Version: 1.3.6
 Architecture: iphoneos-arm
-Description: Opt-in SpringBoard customizations for rootless and roothide jailbreaks on iOS 15 and newer: dock and Home Screen layouts, icon backup, App Library, double-tap to lock, animations, and fast copy.
+Description: Opt-in SpringBoard customizations for rootless and roothide jailbreaks on iOS 15 and newer: dock and Home Screen layouts, icon backup, App Library, double-tap to lock, animations, navigation slide removal in apps, and fast copy.
 Maintainer: Kolbicz
 Author: Kolbicz
 Section: Tweaks
 Depends: mobilesubstrate, preferenceloader
-Conflicts: com.christoph.sbcustomizer, com.christoph.doubletaplock, com.christoph.noapplibrary
-Replaces: com.christoph.sbcustomizer, com.christoph.doubletaplock, com.christoph.noapplibrary
+Conflicts: com.christoph.sbcustomizer, com.christoph.doubletaplock, com.christoph.noapplibrary, cz.kolbi.noslide
+Replaces: com.christoph.sbcustomizer, com.christoph.doubletaplock, com.christoph.noapplibrary, cz.kolbi.noslide
