@@ -56,10 +56,11 @@ apply live, and a respring button is included for changes that need one.
   animation added inside `UICalloutBar` (iOS 15) or `_UIEditMenuContainerView`
   / `_UIEditMenuListView` (iOS 16+) is sped up, independent of the
   presentation methods, which differ per iOS version.
-- Fast Copy and the Spotlight option now work in sandboxed apps. Their
-  switches, together with Fast Page Transitions, reach apps as one 64-bit
-  Darwin notification state that SpringBoard republishes at launch and on
-  every change, since sandboxed processes cannot read the preferences domain.
+- Fast Copy now works in sandboxed apps. Its switch, together with Fast Page
+  Transitions, Fast Sheets and the Spotlight option's search-UI half, reaches
+  apps as one 64-bit Darwin notification state that SpringBoard republishes
+  at launch and on every change, since sandboxed processes cannot read the
+  preferences domain.
 - The respring notification is honoured only together with a fresh request
   timestamp that the Settings pane writes to the preferences domain, so
   other apps can no longer trigger a respring.

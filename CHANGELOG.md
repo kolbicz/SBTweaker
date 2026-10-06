@@ -8,9 +8,9 @@
   short wait while iOS starts the share sheet.
 - Fast Copy now also removes the copy/paste menu's appear and disappear
   animation, not just the delay before it shows.
-- Fixed Fast Copy and the Spotlight option not working in sandboxed apps
-  (Messages, WhatsApp, Safari, the Spotlight UI), which cannot read the
-  tweak's settings. SpringBoard now publishes every in-app switch to apps.
+- Fixed Fast Copy not working in sandboxed apps such as Messages, WhatsApp
+  and Safari, which cannot read the tweak's settings. SpringBoard now
+  publishes every in-app switch to apps.
 - Only the Settings pane can trigger a respring now; other apps can no longer
   respring the device by posting SBTweaker's notification.
 - The tweak now uses the same defaults as the Settings pane everywhere; the
