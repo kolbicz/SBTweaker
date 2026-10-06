@@ -115,7 +115,13 @@ static void sbc_post_notification(CFStringRef name) {
 
 // The Settings app is not allowed to relaunch SpringBoard on
 // rootless/roothide — ask the tweak (which runs inside SpringBoard) to do it.
+// Any process can post the notification, so the tweak only honours it when
+// this fresh request timestamp is in the preferences domain, which sandboxed
+// apps cannot write.
 - (void)respring {
+    CFPreferencesSetAppValue(CFSTR("respringRequest"),
+                             (__bridge CFPropertyListRef)@(CFAbsoluteTimeGetCurrent()), kPrefsDomain);
+    CFPreferencesAppSynchronize(kPrefsDomain);
     sbc_post_notification(CFSTR("cz.kolbi.sbtweaker/respring"));
 }
 

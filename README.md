@@ -44,6 +44,24 @@ All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
 
+## Version 1.3.7
+
+- Fast Copy and the Spotlight option now work in sandboxed apps. Their
+  switches, together with Fast Page Transitions, reach apps as one 64-bit
+  Darwin notification state that SpringBoard republishes at launch and on
+  every change, since sandboxed processes cannot read the preferences domain.
+- The respring notification is honoured only together with a fresh request
+  timestamp that the Settings pane writes to the preferences domain, so
+  other apps can no longer trigger a respring.
+- Missing preference keys fall back to `SBTDefaults.h` in the tweak as well.
+- SpringBoard-only hooks moved into their own group; app extensions and
+  daemons without a bundle get no hooks at all.
+- The Lock Screen double-tap checks for passcode UI only when a double-tap is
+  recognized, and configs identified as neither Home Screen nor Dock are
+  cached so their getters skip the layout provider.
+- `%orig` is no longer used inside argument lists, which the roothide Theos
+  fork's Logos expands incorrectly.
+
 ## Version 1.3.6
 
 - Added an opt-in Fast Page Transitions option. Instead of forcing

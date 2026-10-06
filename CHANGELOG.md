@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.7
+
+- Fixed Fast Copy and the Spotlight option not working in sandboxed apps
+  (Messages, WhatsApp, Safari, the Spotlight UI), which cannot read the
+  tweak's settings. SpringBoard now publishes every in-app switch to apps.
+- Only the Settings pane can trigger a respring now; other apps can no longer
+  respring the device by posting SBTweaker's notification.
+- The tweak now uses the same defaults as the Settings pane everywhere; the
+  built-in fallbacks for the Dock count, spacing and icon scale disagreed.
+- SpringBoard-only code no longer loads into apps, and nothing loads into app
+  extensions such as the share sheet or keyboards, so apps start faster.
+- Double-tap to lock on the Lock Screen no longer scans the whole screen on
+  every touch, and Home Screen layout passes avoid repeated lookups for App
+  Library and folder grids.
+
 ## 1.3.6
 
 - Added an opt-in Fast Page Transitions option with a Transition Duration
