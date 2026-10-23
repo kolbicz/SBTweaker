@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.3.10
+
+- Fixed apps crashing with Fast Page Transitions, Fast Sheets or Fast Copy
+  on. Some apps (Signal, WhatsApp, the App Store, PingID) could close while
+  a screen opened or closed, because SBTweaker changed the timing of an
+  animation the app had marked as read-only.
+
 ## 1.3.9
 
 - Icon Scale now starts from the device's own icon size instead of a 60 pt

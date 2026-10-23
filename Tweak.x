@@ -2200,7 +2200,7 @@ static void ns_clampAnimation(CAAnimation *anim, CFTimeInterval target) {
     // the delay runs out — a one-frame flash once everything else is quick.
     // Delays inside a group are scaled by the group's speed already.
     if (anim.beginTime > 0) anim.beginTime = 0;
-    anim.timeOffset = 0;
+    if (anim.timeOffset != 0) anim.timeOffset = 0;
 }
 
 // Fast Copy, part two: the copy/paste menu also appears and disappears
@@ -2233,10 +2233,21 @@ static const CFTimeInterval kSBTMenuDuration = 0.01;
 %hook CALayer
 - (void)addAnimation:(CAAnimation *)anim forKey:(NSString *)key {
     if (anim && [NSThread isMainThread]) {
+        CFTimeInterval target = 0;
         if (ns_clamping)
-            ns_clampAnimation(anim, ns_clampDuration);
+            target = ns_clampDuration;
         else if ((sbt_cached_app_state & SBT_APP_FAST_COPY) && sbt_layer_in_edit_menu(self))
-            ns_clampAnimation(anim, kSBTMenuDuration);
+            target = kSBTMenuDuration;
+        // Clamp a copy: apps re-add animations read back with
+        // animationForKey:, which are read-only, and changing their timing
+        // throws (Signal, WhatsApp, App Store, PingID crashed). Core
+        // Animation copies the animation on add anyway.
+        if (target > 0 && ns_clampable(anim)) {
+            CAAnimation *copy = [anim copy];
+            ns_clampAnimation(copy, target);
+            %orig(copy, key);
+            return;
+        }
     }
     %orig;
 }

@@ -48,6 +48,15 @@ All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
 apply live, and a respring button is included for changes that need one.
 
+## Version 1.3.10
+
+- The `CALayer addAnimation:forKey:` hook behind Fast Page Transitions, Fast
+  Sheets and Fast Copy now speeds up a copy of the animation and adds that
+  copy. Apps can re-add animations read back with `animationForKey:`, which
+  are immutable; setting their timing (`timeOffset` was always written)
+  raised an exception and aborted the app. Only animations that are actually
+  sped up are copied, and `timeOffset` is written only when it isn't 0.
+
 ## Version 1.3.9
 
 - Icon scale scales each layout configuration's native `iconImageInfo`
