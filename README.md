@@ -64,13 +64,12 @@ for changes that need one.
 - Portrait Home Screen and dock spacing add the extras to the native insets
   instead of the fixed `{60, 27, 100, 27}` / 16 bases. The spacing clamp uses
   the grid and icon scale actually in use.
-- Wake/sleep: where `SBScreenWakeAnimationController` has
-  `+backlightFadeDurationForSource:isWake:` and
-  `+_animationSpeedForBacklightChangeSource:isWake:`, those are hooked
-  (`WakeExact`), so the fade is chosen by the real direction. Older versions
-  keep the remembered-flag hooks (`WakeLegacy`). The wake speed is 10x and no
-  longer compounds with the lift-to-wake multiplier (1000 x 1000 left the
-  iPadOS 15 Lock Screen views hidden).
+- Wake/sleep: the fade and speed getters (`Wake`) are installed on every
+  version, as in 1.3.10, with wake speed multipliers of 1000.
+  `+backlightFadeDurationForSource:isWake:` is hooked as well where it exists
+  (`WakeExact`); it also sets the direction flag the getters use. It is not
+  the only consumer of the fade: locking from an app or the Home Screen
+  bypasses it.
 - The drag coefficient global is located once per process and reset to 1.0
   when the option goes off after a value was written.
 - App state: Fast Sheets duration in bits 32-47, falling back to the page

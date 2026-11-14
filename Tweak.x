@@ -2327,30 +2327,23 @@ static void sbc_install_add_widget_hooks(void) {
 //   speed — the speed alone does nothing while the fade ramp is non-zero.
 // The fade duration is one setting shared by both transitions, so each
 // switch has to know which transition is running:
-//   wake:  fade 0 + speed kSBTWakeSpeed   iff noWakeAnim
-//   sleep: fade 0                         iff noSleepFade
-// WakeExact hooks the class methods that are handed isWake; WakeLegacy, for
-// versions without them, remembers the flag from the last settings fetch.
+//   wake:  fade 0 + speed multipliers 1000   iff noWakeAnim
+//   sleep: fade 0                            iff noSleepFade
+// The instance getters below cover every path that reads the settings; the
+// flag they need is set by every settings fetch and, where SpringBoard has it,
+// by +backlightFadeDurationForSource:isWake:, which is handed isWake directly.
 // Read live, so the toggles are instant.
 
 static BOOL sbt_transition_is_wake = YES;
-static const double kSBTWakeSpeed = 10.0;
 
-// Preferred path: both of these class methods are handed isWake directly, so
-// which transition is in flight is never in doubt.
-//
-// +backlightFadeDurationForSource:isWake: is the only consumer of
-// backlightFadeDuration in SpringBoard. It computes
-//     [rootSettings backlightFadeDuration] / _animationSpeedFor...
-// reading the settings getter itself rather than going through
-// -_animationSettingsForBacklightChangeSource:isWake:. That is why the shared
-// sbt_transition_is_wake flag below is unreliable: on a wake the fade can be
-// asked for before the settings call has flipped the flag, so the getter
-// answers from the sleep branch and hands back the stock fade instead of 0.
-// Ordering decides it, which makes the fault intermittent.
+// Not the only consumer of backlightFadeDuration: locking from the Lock
+// Screen goes through it, locking from an app or the Home Screen does not.
+// So this only sharpens the flag and answers its own call; the getters below
+// stay installed on every version.
 %group WakeExact
 %hook SBScreenWakeAnimationController
 + (double)backlightFadeDurationForSource:(long long)source isWake:(BOOL)wake {
+    sbt_transition_is_wake = wake;
     BOOL off = sbc_pref_bool_live(wake ? CFSTR("noWakeAnim") : CFSTR("noSleepFade"));
 #if SBT_WAKE_TRACE
     double stock = %orig;
@@ -2362,30 +2355,13 @@ static const double kSBTWakeSpeed = 10.0;
     return %orig;
 #endif
 }
-
-+ (double)_animationSpeedForBacklightChangeSource:(long long)source isWake:(BOOL)wake {
-    // One value instead of two multiplied together. See kSBTWakeSpeed.
-    BOOL fast = wake && sbc_pref_bool_live(CFSTR("noWakeAnim"));
-#if SBT_WAKE_TRACE
-    double stock = %orig;
-    SBT_TRACE("+speed %s src=%lld stock=%.3f -> %.3f", wake ? "wake" : "sleep", source,
-              stock, fast ? kSBTWakeSpeed : stock);
-    return fast ? kSBTWakeSpeed : stock;
-#else
-    if (fast) return kSBTWakeSpeed;
-    return %orig;
-#endif
-}
 %end
 %end
 
-
-// Fallback for versions without those class methods: the instance getter plus
-// a flag remembered from the last transition.
-%group WakeLegacy
+%group Wake
 %hook SBScreenWakeAnimationController
 - (id)_animationSettingsForBacklightChangeSource:(long long)source isWake:(BOOL)wake {
-    SBT_TRACE("-settings %s src=%lld (legacy flag was %s)", wake ? "wake" : "sleep", source,
+    SBT_TRACE("-settings %s src=%lld (flag was %s)", wake ? "wake" : "sleep", source,
               sbt_transition_is_wake ? "wake" : "sleep");
 #if SBT_WAKE_TRACE
     if (wake) sbt_trace_schedule_snapshots();
@@ -2403,7 +2379,7 @@ static const double kSBTWakeSpeed = 10.0;
 %end
 %end
 
-%group WakeLegacy
+%group Wake
 %hook SBFWakeAnimationSettings
 - (double)backlightFadeDuration {
     SBT_TRACE("-settings fade, flag=%s", sbt_transition_is_wake ? "wake" : "sleep");
@@ -2411,25 +2387,16 @@ static const double kSBTWakeSpeed = 10.0;
         return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 0 : %orig;
     return sbc_pref_bool_live(CFSTR("noSleepFade")) ? 0 : %orig;
 }
-// +[SBScreenWakeAnimationController _animationSpeedForBacklightChangeSource:
-// isWake:] takes speedMultiplierForLiftToWake for a lift-to-wake source and
-// then MULTIPLIES it by speedMultiplierForWake. Returning a large value from
-// both therefore compounded: 1000 x 1000 = 1000000.
-//
-// That matters because the wake sequence hides the Lock Screen views
-// (_setRelevantLockScreenViewsHidden:) and unhides them from the animation's
-// completion. At an absurd speed the completion is mishandled and the clock
-// stays hidden for seconds -- seen on iPadOS 15. A modest speed still makes a
-// ~0.5s animation imperceptible (0.05s) while staying inside the range
-// SpringBoard is written for, and the lift multiplier is left neutral so the
-// two can no longer compound.
+// Same values as 1.3.10. Lowering them in 1.4.0 (to keep the Lock Screen
+// clock from staying hidden) did not fix the clock and let the wake
+// animation show again.
 - (double)speedMultiplierForWake {
     SBT_TRACE("-speedMultiplierForWake");
-    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? kSBTWakeSpeed : %orig;
+    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 1000 : %orig;
 }
 - (double)speedMultiplierForLiftToWake {
     SBT_TRACE("-speedMultiplierForLiftToWake");
-    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 1.0 : %orig;
+    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 1000 : %orig;
 }
 %end
 %end
@@ -2608,22 +2575,6 @@ static void sbt_trace_schedule_snapshots(void) {
             sbt_trace_snapshot([NSString stringWithFormat:@"+%.1fs", delay.doubleValue]);
         });
     }
-}
-
-// Which transition SpringBoard sets up, alongside the exact hooks (the
-// legacy group hooks this method itself).
-static id (*sbt_trace_orig_settings)(id, SEL, long long, BOOL) = NULL;
-static id sbt_trace_settings(id self, SEL _cmd, long long source, BOOL wake) {
-    SBT_TRACE("-settings %s src=%lld", wake ? "wake" : "sleep", source);
-    if (wake) sbt_trace_schedule_snapshots();
-    return sbt_trace_orig_settings(self, _cmd, source, wake);
-}
-
-static void sbt_trace_install_settings_hook(void) {
-    Class cls = objc_getClass("SBScreenWakeAnimationController");
-    SEL sel = @selector(_animationSettingsForBacklightChangeSource:isWake:);
-    if (cls && class_getInstanceMethod(cls, sel))
-        MSHookMessageEx(cls, sel, (IMP)sbt_trace_settings, (IMP *)&sbt_trace_orig_settings);
 }
 
 static void sbt_trace_install_view_hooks(void) {
@@ -3467,24 +3418,12 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
     // from inside a random app.
     %init(SpringBoard);
 
-    // Prefer the class methods that take isWake, and only fall back to the
-    // instance getter plus a remembered flag where they do not exist.
-    Class wakeCtrl = objc_getClass("SBScreenWakeAnimationController");
-    if (wakeCtrl &&
-        [wakeCtrl respondsToSelector:@selector(backlightFadeDurationForSource:isWake:)] &&
-        [wakeCtrl respondsToSelector:@selector(_animationSpeedForBacklightChangeSource:isWake:)]) {
+    %init(Wake);
+    if ([objc_getClass("SBScreenWakeAnimationController")
+            respondsToSelector:@selector(backlightFadeDurationForSource:isWake:)])
         %init(WakeExact);
 #if SBT_WAKE_TRACE
-        sbt_trace_install_settings_hook();
-#endif
-    } else {
-        NSLog(@"[SBT:WAKE] isWake class methods missing, using the legacy flag");
-        %init(WakeLegacy);
-    }
-#if SBT_WAKE_TRACE
-    SBT_TRACE("trace build: %s path, noWakeAnim=%d noSleepFade=%d",
-              wakeCtrl && [wakeCtrl respondsToSelector:@selector(backlightFadeDurationForSource:isWake:)]
-                  ? "exact" : "legacy",
+    SBT_TRACE("trace build: noWakeAnim=%d noSleepFade=%d",
               sbc_pref_bool_live(CFSTR("noWakeAnim")), sbc_pref_bool_live(CFSTR("noSleepFade")));
     // After launch, so the class scan does not delay SpringBoard starting.
     dispatch_async(dispatch_get_main_queue(), ^{ sbt_trace_install_view_hooks(); });
