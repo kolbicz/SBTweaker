@@ -6,7 +6,7 @@
 // SBTNumberCell — slider with an editable number field beside it.
 // Specifier keys: key, defaults, min, max, default, isInteger (optional bool).
 // Values persist straight to the tweak's defaults domain via CFPreferences;
-// SpringBoard picks them up at the next respring.
+// releasing the slider or leaving the field posts the apply notification.
 
 #define kPrefsDomain SBTPreferencesDomain
 #define sbc_default_values SBTDefaultValues
@@ -138,7 +138,18 @@ static void sbc_write_pref(NSString *key, id value, BOOL sync) {
 }
 
 - (void)textFieldDidEndEditing:(UITextField *)textField {
-    [self setValue:[textField.text doubleValue]];
+    // -doubleValue stops at a decimal comma ("1,5" read as 1) and reads an
+    // empty field as 0. Accept either separator; anything unreadable puts
+    // the stored value back instead of overwriting it.
+    NSString *text = [[textField.text stringByReplacingOccurrencesOfString:@"," withString:@"."]
+                      stringByTrimmingCharactersInSet:[NSCharacterSet whitespaceCharacterSet]];
+    NSScanner *scanner = [NSScanner scannerWithString:text];
+    double v;
+    if (!text.length || ![scanner scanDouble:&v] || !scanner.isAtEnd || !isfinite(v)) {
+        [self setValue:(double)_slider.value];
+        return;
+    }
+    [self setValue:v];
     [self persist:YES];
 }
 

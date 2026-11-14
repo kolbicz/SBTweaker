@@ -16,7 +16,8 @@ These are in-process Substrate-hook reimplementations of my
 - **Free Icon Placement** (iOS 17, iPhone and iPad): apps and widgets stay
   where they are dropped, with gaps, like on iOS 18
 - **Spacing**: independent portrait and landscape Home Screen insets, plus
-  independent left and right dock spacing
+  independent left and right dock spacing; the extras are added to the
+  device's own margins, so 0 everywhere is the stock layout
 - **Icon scale**: separate Home Screen and Dock scaling; the Home value applies
   in portrait and landscape
 - **Hide App Library**: removes the App Library page
@@ -33,20 +34,55 @@ These are in-process Substrate-hook reimplementations of my
   and guarded restore of Home Screen, folders and Dock after rejailbreaking
 - **Animations**:
   - Drag Coefficient slider (UIAnimationDragCoefficient, 0.01–2.00,
-    default 1.0; 1.0 = stock, leaves the system value untouched)
+    default 1.0; 1.0 = stock, and switching back restores stock speed live)
   - Disable Wake Animation (screen on)
   - Disable Screen Off Fade (screen off)
   - Disable Unlock Icon Fly-In
   - Fast Copy (the copy/paste menu appears instantly — also inside apps)
-- **Transitions**: Fast Page Transitions and Fast Sheets with a shared
-  Transition Duration (0.01–1.00 s, default 0.01 = instant) speed up the slide
+- **Transitions**: Fast Page Transitions and Fast Sheets, each with its own
+  duration (0.01–1.00 s, default 0.01 = instant), speed up the slide
   when an app opens a new page or goes back, including app-provided
   transitions, and sheets and pop-ups sliding up and closing; swipe gestures are
   unchanged and changes apply without a respring
 
 All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls
-apply live, and a respring button is included for changes that need one.
+apply live, switching them off included (except the Home Screen grid on
+iOS 17 and later, which needs a respring), and a respring button is included
+for changes that need one.
+
+## Version 1.4.0
+
+- Layout values written into SpringBoard's objects (portrait columns/rows and
+  insets of the grid configurations, the dock model's `gridSize`, list views'
+  auto-fit) record the native value before the first write, kept current by
+  setter hooks and copied with the configuration. `sbc_apply` writes them
+  back for every feature that is off (all of them with the master switch
+  off), and restores native `iconImageInfo` and refreshes icon views when
+  scaling goes off. The root grid is not restored on iOS 17+, whose list
+  models are built with the custom grid at launch.
+- Portrait Home Screen and dock spacing add the extras to the native insets
+  instead of the fixed `{60, 27, 100, 27}` / 16 bases. The spacing clamp uses
+  the grid and icon scale actually in use.
+- Wake/sleep: where `SBScreenWakeAnimationController` has
+  `+backlightFadeDurationForSource:isWake:` and
+  `+_animationSpeedForBacklightChangeSource:isWake:`, those are hooked
+  (`WakeExact`), so the fade is chosen by the real direction. Older versions
+  keep the remembered-flag hooks (`WakeLegacy`). The wake speed is 10x and no
+  longer compounds with the lift-to-wake multiplier (1000 x 1000 left the
+  iPadOS 15 Lock Screen views hidden).
+- The drag coefficient global is located once per process and reset to 1.0
+  when the option goes off after a value was written.
+- App state: Fast Sheets duration in bits 32-47, falling back to the page
+  transition duration when empty. App-side hooks read the cached state.
+  `ns_clampAnimation` treats a duration of 0 as Core Animation's 0.25 s.
+- Double-tap delegates refuse to begin while their switch is off.
+- Icon backup: serialized on the save, written on a serial background queue;
+  a failed write removes the outdated snapshot. Restore is skipped when the
+  current icon state equals the snapshot.
+- The preferences cache refreshes every 10 s (was 1 s); the apply
+  notification still reloads it at once. Defaults version 18 migrates
+  `noSlideDuration` into `fastSheetsDuration`.
 
 ## Version 1.3.10
 

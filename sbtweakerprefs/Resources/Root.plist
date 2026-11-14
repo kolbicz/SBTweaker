@@ -197,7 +197,7 @@
 			<key>label</key>
 			<string>Animations</string>
 			<key>footerText</key>
-			<string>UIAnimationDragCoefficient — lower is faster. 1.0 is stock and leaves the system value untouched; a respring then restores stock behavior. Disable Wake Animation affects turning the screen on, Disable Screen Off Fade affects turning it off. Fast Copy also applies inside apps and takes effect immediately.</string>
+			<string>UIAnimationDragCoefficient — lower is faster. 1.0 is stock: setting it back to 1.0 or switching this off restores stock speed right away. Disable Wake Animation affects turning the screen on, Disable Screen Off Fade affects turning it off. Fast Copy also applies inside apps and takes effect immediately.</string>
 		</dict>
 		<dict>
 			<key>cell</key><string>PSSwitchCell</string>
@@ -276,7 +276,7 @@
 			<key>label</key>
 			<string>Transitions</string>
 			<key>footerText</key>
-			<string>Fast Page Transitions speeds up the slide when an app opens a new page — a chat, a post, a settings page — and when you go back. Fast Sheets speeds up sheets and pop-ups sliding up and closing — the share sheet and its AirDrop page, compose screens, alerts. Transition Duration is the longest either may take: 0.01 is instant, 1.00 is about stock speed. Swiping back or down still follows your finger. Changes apply right away, no respring needed.</string>
+			<string>Fast Page Transitions speeds up the slide when an app opens a new page — a chat, a post, a settings page — and when you go back. Fast Sheets speeds up sheets and pop-ups sliding up and closing — the share sheet and its AirDrop page, compose screens, alerts. Each duration is the longest that transition may take: 0.01 is instant, 1.00 is about stock speed. Swiping back or down still follows your finger. Changes apply right away, no respring needed.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -289,6 +289,22 @@
 			<string>Fast Page Transitions</string>
 			<key>default</key>
 			<false/>
+		</dict>
+		<dict>
+			<key>cellClass</key>
+			<string>SBTNumberCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>noSlideDuration</string>
+			<key>label</key>
+			<string>Page Duration</string>
+			<key>min</key>
+			<real>0.01</real>
+			<key>max</key>
+			<real>1.00</real>
+			<key>default</key>
+			<real>0.01</real>
 		</dict>
 		<dict>
 			<key>cell</key>
@@ -308,9 +324,9 @@
 			<key>defaults</key>
 			<string>cz.kolbi.sbtweaker</string>
 			<key>key</key>
-			<string>noSlideDuration</string>
+			<string>fastSheetsDuration</string>
 			<key>label</key>
-			<string>Transition Duration</string>
+			<string>Sheet Duration</string>
 			<key>min</key>
 			<real>0.01</real>
 			<key>max</key>
@@ -427,6 +443,36 @@
 			<string>Reset to Defaults</string>
 			<key>action</key>
 			<string>resetDefaults</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
+			<string>About</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSTitleValueCell</string>
+			<key>label</key>
+			<string>Version</string>
+			<key>get</key>
+			<string>version:</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Follow @_kolbicz on X</string>
+			<key>action</key>
+			<string>openTwitter</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSButtonCell</string>
+			<key>label</key>
+			<string>Source Code on GitHub</string>
+			<key>action</key>
+			<string>openGitHub</string>
 		</dict>
 	</array>
 	<key>title</key>

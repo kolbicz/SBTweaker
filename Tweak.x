@@ -58,7 +58,13 @@ typedef struct {
 - (void)noteIconStateChangedExternally;
 - (id)icon;
 - (BOOL)isDock;
+- (BOOL)automaticallyAdjustsLayoutMetricsToFit;
 - (void)setAutomaticallyAdjustsLayoutMetricsToFit:(BOOL)value;
+- (NSUInteger)numberOfPortraitColumns;
+- (NSUInteger)numberOfPortraitRows;
+- (NSUInteger)numberOfLandscapeColumns;
+- (NSUInteger)numberOfLandscapeRows;
+- (UIEdgeInsets)portraitLayoutInsets;
 - (SBCGridSize)gridSize;
 - (void)setGridSize:(SBCGridSize)grid;
 - (void)changeGridSize:(SBCGridSize)grid options:(NSUInteger)options;
@@ -107,6 +113,66 @@ typedef struct {
 #define kPrefsDomain SBTPreferencesDomain
 static CFStringRef const kApplyNotification = CFSTR("cz.kolbi.sbtweaker/apply");
 static BOOL sbc_pref_bool_live(CFStringRef key);
+
+// Wake/sleep tracing for test builds (make SBT_TRACE=1). Times are
+// CACurrentMediaTime() in seconds, so lines from one wake line up.
+//
+// Every line also goes to a file on the device. It lives in the media
+// folder, which a paired computer reads over USB (afcclient, Finder's file
+// sharing) without going through the device's own share sheet. It starts
+// over past 2 MB, keeping the previous file as .old.
+#if SBT_WAKE_TRACE
+static NSString *const kSBTTraceLogPath = @"/var/mobile/Media/SBTweaker/wake-trace.log";
+static const unsigned long long kSBTTraceLogLimit = 2 * 1024 * 1024;
+
+static void sbt_trace_write(NSString *line) {
+    NSLog(@"[SBT:WAKE] %@", line);
+    static dispatch_queue_t queue;
+    static NSDateFormatter *formatter;
+    static NSFileHandle *handle;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("cz.kolbi.sbtweaker.trace", DISPATCH_QUEUE_SERIAL);
+        formatter = [NSDateFormatter new];
+        formatter.locale = [NSLocale localeWithLocaleIdentifier:@"en_US_POSIX"];
+        formatter.dateFormat = @"yyyy-MM-dd HH:mm:ss.SSS";
+    });
+    NSDate *now = [NSDate date];
+    dispatch_async(queue, ^{
+        @try {
+            if (!handle) {
+                NSFileManager *fm = [NSFileManager defaultManager];
+                [fm createDirectoryAtPath:[kSBTTraceLogPath stringByDeletingLastPathComponent]
+              withIntermediateDirectories:YES attributes:nil error:NULL];
+                if ([[fm attributesOfItemAtPath:kSBTTraceLogPath error:NULL] fileSize] > kSBTTraceLogLimit) {
+                    NSString *old = [kSBTTraceLogPath stringByAppendingString:@".old"];
+                    [fm removeItemAtPath:old error:NULL];
+                    [fm moveItemAtPath:kSBTTraceLogPath toPath:old error:NULL];
+                }
+                if (![fm fileExistsAtPath:kSBTTraceLogPath])
+                    [fm createFileAtPath:kSBTTraceLogPath contents:nil attributes:nil];
+                handle = [NSFileHandle fileHandleForWritingAtPath:kSBTTraceLogPath];
+                [handle seekToEndOfFile];
+            }
+            NSString *entry = [NSString stringWithFormat:@"%@ %@\n", [formatter stringFromDate:now], line];
+            [handle writeData:[entry dataUsingEncoding:NSUTF8StringEncoding]];
+            // Past the limit: close it, so the next line starts a new file.
+            if (handle.offsetInFile > kSBTTraceLogLimit) {
+                [handle closeFile];
+                handle = nil;
+            }
+        } @catch (__unused NSException *e) {
+            handle = nil;
+        }
+    });
+}
+
+static void sbt_trace_schedule_snapshots(void);
+#define SBT_TRACE(fmt, ...) sbt_trace_write([NSString stringWithFormat:@"%.3f " fmt, \
+                                                CACurrentMediaTime(), ##__VA_ARGS__])
+#else
+#define SBT_TRACE(...) do {} while (0)
+#endif
 
 static int clampi(int v, int lo, int hi) {
     return v < lo ? lo : (v > hi ? hi : v);
@@ -187,11 +253,30 @@ static NSString *sbt_icon_layout_backup_path(void) {
 
 static BOOL sbt_icon_restore_guard = NO;
 
-static BOOL sbt_write_icon_layout_snapshot(id state) {
-    if (![NSPropertyListSerialization propertyList:state
-                              isValidForFormat:NSPropertyListBinaryFormat_v1_0])
-        return NO;
-    return [state writeToFile:sbt_icon_layout_backup_path() atomically:YES];
+// A snapshot that could not be refreshed is removed rather than kept: the
+// next launch would otherwise restore it over every change made since.
+//
+// The state is serialized right away, since SpringBoard may go on mutating
+// it, but written on a serial background queue so a save never waits on the
+// disk. Order is kept, so the newest save always lands last.
+static void sbt_write_icon_layout_snapshot(id state) {
+    static dispatch_queue_t queue;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{
+        queue = dispatch_queue_create("cz.kolbi.sbtweaker.iconbackup", DISPATCH_QUEUE_SERIAL);
+    });
+    NSData *data = [NSPropertyListSerialization propertyList:state
+                                            isValidForFormat:NSPropertyListBinaryFormat_v1_0]
+        ? [NSPropertyListSerialization dataWithPropertyList:state
+                                                     format:NSPropertyListXMLFormat_v1_0
+                                                    options:0 error:NULL]
+        : nil;
+    NSString *path = sbt_icon_layout_backup_path();
+    dispatch_async(queue, ^{
+        if ([data writeToFile:path atomically:YES]) return;
+        NSLog(@"[SBT:ICONS] snapshot not refreshed, removing the outdated one");
+        [[NSFileManager defaultManager] removeItemAtPath:path error:NULL];
+    });
 }
 
 static BOOL sbt_restore_icon_layout(void) {
@@ -206,6 +291,12 @@ static BOOL sbt_restore_icon_layout(void) {
         id store = [%c(SBDefaultIconModelStore) sharedInstance];
         NSURL *url = [store respondsToSelector:@selector(currentIconStateURL)]
             ? [store currentIconStateURL] : nil;
+        // Nothing to do when SpringBoard loaded the very layout we kept.
+        if (url.path.length &&
+            [[NSDictionary dictionaryWithContentsOfFile:url.path] isEqualToDictionary:state]) {
+            NSLog(@"[SBT:ICONS] layout matches the snapshot, no restore needed");
+            return NO;
+        }
         if (url.path.length)
             restored = [state writeToFile:url.path atomically:YES];
         if ([model respondsToSelector:@selector(importState:)])
@@ -245,17 +336,146 @@ static BOOL sbt_restore_icon_layout(void) {
 %end
 %end
 
+// ------------------------------------------------------- native layout values
+//
+// The patches below write custom values into SpringBoard's layout objects.
+// The getter hooks only override while a feature is on; once it is switched
+// off they answer with the stored value, which was still ours, so switching a
+// feature off used to take a respring. The value each object held before our
+// first write is therefore kept alongside it, replaced whenever SpringBoard
+// itself sets a new one, and written back when the feature is switched off.
+static char sbc_native_layout_key;
+static BOOL sbc_writing_layout = NO;  // our own write, not a new native value
+static BOOL sbc_reading_native = NO;  // getter hooks answer the stored value
+
+static NSMutableDictionary *sbc_native_layout(id obj, BOOL create) {
+    if (!obj) return nil;
+    NSMutableDictionary *values = objc_getAssociatedObject(obj, &sbc_native_layout_key);
+    if (!values && create) {
+        values = [NSMutableDictionary dictionary];
+        objc_setAssociatedObject(obj, &sbc_native_layout_key, values,
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    }
+    return values;
+}
+
+static void sbc_record_native(id obj, NSString *key, NSValue *(^read)(void)) {
+    NSMutableDictionary *values = sbc_native_layout(obj, YES);
+    if (!values || values[key]) return;
+    sbc_reading_native = YES;
+    NSValue *value = read();
+    sbc_reading_native = NO;
+    if (value) values[key] = value;
+}
+
+// SpringBoard set a value itself: that is the native one from now on.
+static void sbc_note_native(id obj, NSString *key, NSValue *value) {
+    if (sbc_writing_layout) return;
+    NSMutableDictionary *values = sbc_native_layout(obj, NO);
+    if (values[key]) values[key] = value;
+}
+
+static void sbc_write_columns(id obj, NSUInteger columns) {
+    if (![obj respondsToSelector:@selector(setNumberOfPortraitColumns:)]) return;
+    if ([obj respondsToSelector:@selector(numberOfPortraitColumns)])
+        sbc_record_native(obj, @"columns", ^NSValue *{ return @([obj numberOfPortraitColumns]); });
+    sbc_writing_layout = YES;
+    [obj setNumberOfPortraitColumns:columns];
+    sbc_writing_layout = NO;
+}
+
+static void sbc_write_rows(id obj, NSUInteger rows) {
+    if (![obj respondsToSelector:@selector(setNumberOfPortraitRows:)]) return;
+    if ([obj respondsToSelector:@selector(numberOfPortraitRows)])
+        sbc_record_native(obj, @"rows", ^NSValue *{ return @([obj numberOfPortraitRows]); });
+    sbc_writing_layout = YES;
+    [obj setNumberOfPortraitRows:rows];
+    sbc_writing_layout = NO;
+}
+
+static void sbc_write_insets(id obj, UIEdgeInsets insets) {
+    if (![obj respondsToSelector:@selector(setPortraitLayoutInsets:)]) return;
+    if ([obj respondsToSelector:@selector(portraitLayoutInsets)])
+        sbc_record_native(obj, @"insets", ^NSValue *{
+            return [NSValue valueWithUIEdgeInsets:[obj portraitLayoutInsets]];
+        });
+    sbc_writing_layout = YES;
+    [obj setPortraitLayoutInsets:insets];
+    sbc_writing_layout = NO;
+}
+
+static void sbc_write_grid_size(id obj, SBCGridSize grid) {
+    if (![obj respondsToSelector:@selector(setGridSize:)]) return;
+    if ([obj respondsToSelector:@selector(gridSize)])
+        sbc_record_native(obj, @"gridSize", ^NSValue *{
+            SBCGridSize native = [obj gridSize];
+            return [NSValue valueWithBytes:&native objCType:@encode(SBCGridSize)];
+        });
+    sbc_writing_layout = YES;
+    [obj setGridSize:grid];
+    sbc_writing_layout = NO;
+}
+
+static void sbc_write_autofit(id obj, BOOL autofit) {
+    if (![obj respondsToSelector:@selector(setAutomaticallyAdjustsLayoutMetricsToFit:)]) return;
+    if ([obj respondsToSelector:@selector(automaticallyAdjustsLayoutMetricsToFit)])
+        sbc_record_native(obj, @"autofit", ^NSValue *{
+            return @([obj automaticallyAdjustsLayoutMetricsToFit]);
+        });
+    sbc_writing_layout = YES;
+    [obj setAutomaticallyAdjustsLayoutMetricsToFit:autofit];
+    sbc_writing_layout = NO;
+}
+
+// Writes the native value back and forgets it. NO when there was none, i.e.
+// the value was never changed.
+static BOOL sbc_restore_native(id obj, NSString *key) {
+    NSMutableDictionary *values = sbc_native_layout(obj, NO);
+    NSValue *value = values[key];
+    if (!value) return NO;
+    [values removeObjectForKey:key];
+    sbc_writing_layout = YES;
+    if ([key isEqualToString:@"columns"]) {
+        [obj setNumberOfPortraitColumns:[(NSNumber *)value unsignedIntegerValue]];
+    } else if ([key isEqualToString:@"rows"]) {
+        [obj setNumberOfPortraitRows:[(NSNumber *)value unsignedIntegerValue]];
+    } else if ([key isEqualToString:@"insets"]) {
+        [obj setPortraitLayoutInsets:value.UIEdgeInsetsValue];
+    } else if ([key isEqualToString:@"gridSize"]) {
+        SBCGridSize grid;
+        [value getValue:&grid size:sizeof grid];
+        [obj setGridSize:grid];
+    } else if ([key isEqualToString:@"autofit"]) {
+        [obj setAutomaticallyAdjustsLayoutMetricsToFit:[(NSNumber *)value boolValue]];
+    }
+    sbc_writing_layout = NO;
+    return YES;
+}
+
 // ---------------------------------------------------------------- grid patches
 
 static void disable_list_autofit(id listView, NSString *tag) {
     if ([listView respondsToSelector:@selector(setAutomaticallyAdjustsLayoutMetricsToFit:)]) {
-        [listView setAutomaticallyAdjustsLayoutMetricsToFit:NO];
+        sbc_write_autofit(listView, NO);
         NSLog(@"[SBC] %@ autoFit=NO", tag);
     }
 }
 
-static void patch_dock(id iconCtrl, id mgr, int dockIcons) {
-    id dock = dock_list_view(iconCtrl, mgr);
+static NSArray *sbc_root_list_views(id mgr) {
+    NSMutableArray *lists = [NSMutableArray array];
+    id rootFolder = [mgr respondsToSelector:@selector(rootFolderController)] ? [mgr rootFolderController] : nil;
+    if (![rootFolder respondsToSelector:@selector(iconListViewCount)] ||
+        ![rootFolder respondsToSelector:@selector(iconListViewAtIndex:)])
+        return lists;
+    NSUInteger count = MIN([rootFolder iconListViewCount], 64);
+    for (NSUInteger i = 0; i < count; i++) {
+        id listView = [rootFolder iconListViewAtIndex:i];
+        if (listView) [lists addObject:listView];
+    }
+    return lists;
+}
+
+static void patch_dock(id dock, int dockIcons) {
     if (!dock) { NSLog(@"[SBC] dock: nil dockListView"); return; }
     disable_list_autofit(dock, @"dockListView");
 
@@ -264,65 +484,99 @@ static void patch_dock(id iconCtrl, id mgr, int dockIcons) {
         [model respondsToSelector:@selector(setGridSize:)]) {
         SBCGridSize old = [model gridSize];
         SBCGridSize grid = { (unsigned short)dockIcons, old.rows };
-        [model setGridSize:grid];
+        sbc_write_grid_size(model, grid);
         NSLog(@"[SBC] dock gridSize -> %dx%d", dockIcons, old.rows);
     }
 
     id cfg = dock_layout_config(dock);
     if ([cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)]) {
-        [cfg setNumberOfPortraitColumns:(NSUInteger)dockIcons];
+        sbc_write_columns(cfg, (NSUInteger)dockIcons);
         NSLog(@"[SBC] dock portraitColumns -> %d", dockIcons);
     }
     [dock setNeedsLayout];
 }
 
-static void patch_homescreen_grid(id iconCtrl, id mgr, id cfg, int cols, int rows) {
+static void restore_dock(id dock) {
+    BOOL restored = sbc_restore_native(list_view_model(dock), @"gridSize");
+    restored = sbc_restore_native(dock_layout_config(dock), @"columns") || restored;
+    restored = sbc_restore_native(dock, @"autofit") || restored;
+    if (!restored) return;
+    NSLog(@"[SBC] dock count restored");
+    [dock setNeedsLayout];
+}
+
+static void patch_homescreen_grid(id mgr, id cfg, int cols, int rows) {
     if ([cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)]) {
-        [cfg setNumberOfPortraitColumns:(NSUInteger)cols];
-        if ([cfg respondsToSelector:@selector(setNumberOfPortraitRows:)])
-            [cfg setNumberOfPortraitRows:(NSUInteger)rows];
+        sbc_write_columns(cfg, (NSUInteger)cols);
+        sbc_write_rows(cfg, (NSUInteger)rows);
         NSLog(@"[SBC] hs provider cols=%d rows=%d", cols, rows);
     }
 
-    id rootFolder = [mgr respondsToSelector:@selector(rootFolderController)] ? [mgr rootFolderController] : nil;
-    if (rootFolder && [rootFolder respondsToSelector:@selector(iconListViewCount)] &&
-        [rootFolder respondsToSelector:@selector(iconListViewAtIndex:)]) {
-        NSUInteger count = MIN([rootFolder iconListViewCount], 64);
-        for (NSUInteger i = 0; i < count; i++) {
-            id listView = [rootFolder iconListViewAtIndex:i];
-            if (!listView) continue;
-            NSString *tag = [NSString stringWithFormat:@"page[%lu]", (unsigned long)i];
-            disable_list_autofit(listView, tag);
-            // Never rewrite a Home Screen model's grid. On iOS 15 this can
-            // invalidate and remove widgets during icon-state restoration.
-            // Configuration and SBIconListView metric hooks provide the
-            // custom capacity/layout without modifying the saved icon state.
-            [listView setNeedsLayout];
-        }
+    NSArray *lists = sbc_root_list_views(mgr);
+    for (NSUInteger i = 0; i < lists.count; i++) {
+        id listView = lists[i];
+        NSString *tag = [NSString stringWithFormat:@"page[%lu]", (unsigned long)i];
+        disable_list_autofit(listView, tag);
+        // Never rewrite a Home Screen model's grid. On iOS 15 this can
+        // invalidate and remove widgets during icon-state restoration.
+        // Configuration and SBIconListView metric hooks provide the
+        // custom capacity/layout without modifying the saved icon state.
+        [listView setNeedsLayout];
     }
 }
 
 // ---------------------------------------------------- spacing (darksword_layout)
 
-static void apply_home_spacing(id cfg, double exL, double exR, double exT, double exB) {
+// The extras are added to the configuration's own native insets, the way the
+// landscape ones always were. Fixed bases ({60, 27, 100, 27} for the Home
+// Screen, 16 at the dock's sides, from the original) only matched some
+// iPhones: elsewhere switching spacing on with no extras already moved the
+// icons. Until we first write, the stored value is the native one.
+static UIEdgeInsets sbc_base_insets(id cfg, UIEdgeInsets stored) {
+    NSValue *native = sbc_native_layout(cfg, NO)[@"insets"];
+    return native ? native.UIEdgeInsetsValue : stored;
+}
+
+static UIEdgeInsets sbc_stored_insets(id cfg) {
+    if (![cfg respondsToSelector:@selector(portraitLayoutInsets)]) return UIEdgeInsetsZero;
+    sbc_reading_native = YES;
+    UIEdgeInsets stored = [cfg portraitLayoutInsets];
+    sbc_reading_native = NO;
+    return stored;
+}
+
+static UIEdgeInsets sbc_home_insets(NSDictionary *p, UIEdgeInsets base) {
+    base.top += prefDouble(p, @"homeExT");
+    base.left += prefDouble(p, @"homeExL");
+    base.bottom += prefDouble(p, @"homeExB");
+    base.right += prefDouble(p, @"homeExR");
+    return base;
+}
+
+static UIEdgeInsets sbc_dock_insets(NSDictionary *p, UIEdgeInsets base) {
+    base.left += prefDouble(p, @"dockExL");
+    base.right += prefDouble(p, @"dockExR");
+    return base;
+}
+
+static void apply_home_spacing(id cfg, NSDictionary *p) {
     if (![cfg respondsToSelector:@selector(setPortraitLayoutInsets:)]) {
         NSLog(@"[SBC:SPACE] layoutConfiguration lacks setPortraitLayoutInsets:");
         return;
     }
-    // Base insets from the original: {60, 27, 100, 27} + user extras.
-    [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(60.0 + exT, 27.0 + exL,
-                                                  100.0 + exB, 27.0 + exR)];
-    NSLog(@"[SBC:SPACE] home insets +L%.1f/R%.1f/T%.1f/B%.1f", exL, exR, exT, exB);
+    UIEdgeInsets insets = sbc_home_insets(p, sbc_base_insets(cfg, sbc_stored_insets(cfg)));
+    sbc_write_insets(cfg, insets);
+    NSLog(@"[SBC:SPACE] home insets %@", NSStringFromUIEdgeInsets(insets));
 }
 
-static void apply_dock_spacing(id dockCfg, double extraL, double extraR) {
+static void apply_dock_spacing(id dockCfg, NSDictionary *p) {
     if (![dockCfg respondsToSelector:@selector(setPortraitLayoutInsets:)]) {
         NSLog(@"[SBC:SPACE] dock layoutConfiguration lacks setPortraitLayoutInsets:");
         return;
     }
-    [dockCfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + extraL,
-                                                      0.0, 16.0 + extraR)];
-    NSLog(@"[SBC:SPACE] dock insets +L%.1f/+R%.1f", extraL, extraR);
+    UIEdgeInsets insets = sbc_dock_insets(p, sbc_base_insets(dockCfg, sbc_stored_insets(dockCfg)));
+    sbc_write_insets(dockCfg, insets);
+    NSLog(@"[SBC:SPACE] dock insets %@", NSStringFromUIEdgeInsets(insets));
 }
 
 // ----------------------------------------------------- scaling (darksword_layout)
@@ -386,6 +640,12 @@ static UIEdgeInsets constrained_grid_insets(UIEdgeInsets insets, int columns,
     return insets;
 }
 
+static double sbc_effective_home_scale(NSDictionary *p) {
+    if (!prefBool(p, @"homeScaleEnabled")) return 1.0;
+    double scale = prefDouble(p, @"homeScale");
+    return scale > 0.0 && scale <= 2.0 ? scale : 1.0;
+}
+
 // SBApplicationIcon only — widgets/folders assert on a forced app icon size.
 static void refresh_list_view_icons(id listView, SBIconImageInfo info) {
     Class iconViewClass = %c(SBIconView);
@@ -403,20 +663,31 @@ static void refresh_list_view_icons(id listView, SBIconImageInfo info) {
     }
 }
 
-static void apply_home_scale(id mgr, id cfg, double scale) {
-    if (scale <= 0.0 || scale > 2.0 || ![cfg respondsToSelector:@selector(iconImageInfo)]) return;
-    // The getter hook already returns the stock geometry scaled once.
-    SBIconImageInfo info = [cfg iconImageInfo];
-
-    id rootFolder = [mgr respondsToSelector:@selector(rootFolderController)] ? [mgr rootFolderController] : nil;
-    if (![rootFolder respondsToSelector:@selector(iconListViewCount)]) return;
-    NSUInteger count = MIN([rootFolder iconListViewCount], 64);
-    for (NSUInteger i = 0; i < count; i++) {
-        id listView = [rootFolder iconListViewAtIndex:i];
-        if (!listView) continue;
+static void refresh_home_icons(id mgr, SBIconImageInfo info) {
+    for (id listView in sbc_root_list_views(mgr)) {
         if ([listView respondsToSelector:@selector(isDock)] && [listView isDock]) continue;
         refresh_list_view_icons(listView, info);
     }
+}
+
+// Scaling switched off: hand the configuration its native icon geometry back.
+// NO when it was never scaled.
+static BOOL restore_icon_scale(id cfg) {
+    SBIconImageInfo native;
+    if (!cfg || !sbc_get_native_icon_info(cfg, &native)) return NO;
+    objc_setAssociatedObject(cfg, &sbc_native_icon_info_key, nil, OBJC_ASSOCIATION_RETAIN_NONATOMIC);
+    if ([cfg respondsToSelector:@selector(setIconImageInfo:)]) {
+        sbc_writing_icon_info = YES;
+        [cfg setIconImageInfo:native];
+        sbc_writing_icon_info = NO;
+    }
+    return YES;
+}
+
+static void apply_home_scale(id mgr, id cfg, double scale) {
+    if (scale <= 0.0 || scale > 2.0 || ![cfg respondsToSelector:@selector(iconImageInfo)]) return;
+    // The getter hook already returns the stock geometry scaled once.
+    refresh_home_icons(mgr, [cfg iconImageInfo]);
     NSLog(@"[SBC:SCALE] home scale=%.2f", scale);
 }
 
@@ -488,9 +759,12 @@ static NSDictionary *sbc_reload_prefs(void) {
 }
 
 static NSDictionary *sbc_prefs(void) {
-    // Hot hooks must not make a cfprefsd round-trip on
-    // every call. Refresh at most once per second so switches still feel live.
-    if (!sbc_cachedPrefs || CFAbsoluteTimeGetCurrent() - sbc_prefs_loaded_at >= 1.0)
+    // Hot hooks must not make a cfprefsd round-trip on every call. The
+    // Settings pane posts the apply notification after every change, and
+    // sbc_apply() reloads right away, so the cache only needs refreshing for
+    // writes that did not come through the pane, or a read so early in boot
+    // that cfprefsd had nothing yet. Ten seconds covers those.
+    if (!sbc_cachedPrefs || CFAbsoluteTimeGetCurrent() - sbc_prefs_loaded_at >= 10.0)
         sbc_reload_prefs();
     return sbc_cachedPrefs;
 }
@@ -578,11 +852,31 @@ static int sbc_config_kind(id cfg) {
     SBIconImageInfo native;
     if (copy && sbc_get_native_icon_info(self, &native))
         sbc_set_native_icon_info(copy, native);
+    NSDictionary *layout = sbc_native_layout(self, NO);
+    if (copy && layout.count)
+        objc_setAssociatedObject(copy, &sbc_native_layout_key, [layout mutableCopy],
+                                 OBJC_ASSOCIATION_RETAIN_NONATOMIC);
     return copy;
+}
+
+- (void)setNumberOfPortraitColumns:(NSUInteger)value {
+    sbc_note_native(self, @"columns", @(value));
+    %orig;
+}
+
+- (void)setNumberOfPortraitRows:(NSUInteger)value {
+    sbc_note_native(self, @"rows", @(value));
+    %orig;
+}
+
+- (void)setPortraitLayoutInsets:(UIEdgeInsets)insets {
+    sbc_note_native(self, @"insets", [NSValue valueWithUIEdgeInsets:insets]);
+    %orig;
 }
 
 - (NSUInteger)numberOfPortraitRows {
     NSUInteger orig = %orig;
+    if (sbc_reading_native) return orig;
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled")) return orig;
     if (sbc_config_kind(self) != SBC_CFG_ROOT) return orig;
@@ -592,6 +886,7 @@ static int sbc_config_kind(id cfg) {
 
 - (NSUInteger)numberOfPortraitColumns {
     NSUInteger orig = %orig;
+    if (sbc_reading_native) return orig;
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled")) return orig;
     int kind = sbc_config_kind(self);
@@ -618,24 +913,22 @@ static int sbc_config_kind(id cfg) {
 
 - (UIEdgeInsets)portraitLayoutInsets {
     UIEdgeInsets orig = %orig;
+    if (sbc_reading_native) return orig;
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled")) return orig;
     int kind = sbc_config_kind(self);
     if (kind == SBC_CFG_DOCK) {
         if (!prefBool(p, @"dockSpacingEnabled")) return orig;
-        return UIEdgeInsetsMake(0.0, 16.0 + prefDouble(p, @"dockExL"),
-                                0.0, 16.0 + prefDouble(p, @"dockExR"));
+        return sbc_dock_insets(p, sbc_base_insets(self, orig));
     }
     if (kind == SBC_CFG_ROOT) {
         if (!prefBool(p, @"homeSpacingEnabled")) return orig;
-        UIEdgeInsets insets = UIEdgeInsetsMake(60.0 + prefDouble(p, @"homeExT"),
-                                               27.0 + prefDouble(p, @"homeExL"),
-                                               100.0 + prefDouble(p, @"homeExB"),
-                                               27.0 + prefDouble(p, @"homeExR"));
+        UIEdgeInsets insets = sbc_home_insets(p, sbc_base_insets(self, orig));
+        // The grid and icon size actually in use, not settings that are off.
         return constrained_grid_insets(insets,
-            clampi((int)prefInt(p, @"hsCols"), 1, 10),
-            clampi((int)prefInt(p, @"hsRows"), 1, 10),
-            prefDouble(p, @"homeScale"), NO);
+            clampi((int)[(id)self numberOfPortraitColumns], 1, 10),
+            clampi((int)[(id)self numberOfPortraitRows], 1, 10),
+            sbc_effective_home_scale(p), NO);
     }
     return orig;
 }
@@ -775,10 +1068,13 @@ static UIEdgeInsets sbc_landscape_insets(id self, SEL _cmd) {
                                            orig.left + prefDouble(p, @"homeExLLandscape"),
                                            orig.bottom + prefDouble(p, @"homeExBLandscape"),
                                            orig.right + prefDouble(p, @"homeExRLandscape"));
-    return constrained_grid_insets(insets,
-        clampi((int)prefInt(p, @"hsColsLandscape"), 1, 10),
-        clampi((int)prefInt(p, @"hsRowsLandscape"), 1, 10),
-        prefDouble(p, @"homeScale"), YES);
+    // The grid and icon size actually in use, not settings that are off.
+    int columns = [self respondsToSelector:@selector(numberOfLandscapeColumns)]
+        ? (int)[self numberOfLandscapeColumns] : (int)prefInt(p, @"hsColsLandscape");
+    int rows = [self respondsToSelector:@selector(numberOfLandscapeRows)]
+        ? (int)[self numberOfLandscapeRows] : (int)prefInt(p, @"hsRowsLandscape");
+    return constrained_grid_insets(insets, clampi(columns, 1, 10), clampi(rows, 1, 10),
+                                   sbc_effective_home_scale(p), YES);
 }
 
 static SBIconImageInfo sbc_landscape_icon_info(id self, SEL _cmd) {
@@ -828,12 +1124,18 @@ static void sbc_install_landscape_hooks(void) {
 %hook SBDockIconListModel
 - (SBCGridSize)gridSize {
     SBCGridSize grid = %orig;
+    if (sbc_reading_native) return grid;
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled")) return grid;
     if (!prefBool(p, @"dockLayoutEnabled")) return grid;
     int dockIcons = clampi((int)prefInt(p, @"dockIcons"), 1, 8);
     if (grid.columns < dockIcons) grid.columns = (unsigned short)dockIcons;
     return grid;
+}
+
+- (void)setGridSize:(SBCGridSize)grid {
+    sbc_note_native(self, @"gridSize", [NSValue valueWithBytes:&grid objCType:@encode(SBCGridSize)]);
+    %orig;
 }
 %end
 %end
@@ -855,13 +1157,25 @@ static void sbc_install_landscape_hooks(void) {
 // Overriding the model's gridSize getter afterwards (the earlier widget test
 // builds) is not enough: the model keeps its stored grid.
 
-static BOOL sbc_is_ios17_or_newer(void) {
-    static BOOL result;
+// Both are asked from hooks that run many times per layout pass.
+static NSInteger sbc_os_major(void) {
+    static NSInteger major;
     static dispatch_once_t onceToken;
     dispatch_once(&onceToken, ^{
-        result = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 17;
+        major = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
     });
-    return result;
+    return major;
+}
+
+static BOOL sbc_is_ios17_or_newer(void) {
+    return sbc_os_major() >= 17;
+}
+
+// Cached once found; until SpringBoardHome has registered it, nil is not kept.
+static Class sbc_root_folder_class(void) {
+    static Class cls = Nil;
+    if (!cls) cls = objc_getClass("SBRootFolder");
+    return cls;
 }
 
 static SBCGridSize sbc_root_list_grid(Class folderClass, SBCGridSize original, const char *source) {
@@ -869,7 +1183,7 @@ static SBCGridSize sbc_root_list_grid(Class folderClass, SBCGridSize original, c
     // Empty means "no special grid" (e.g. the widget-page variant on iPhone);
     // keep it empty so SpringBoard's early-outs stay intact.
     if (!original.columns || !original.rows) return original;
-    Class rootFolderClass = objc_getClass("SBRootFolder");
+    Class rootFolderClass = sbc_root_folder_class();
     if (!rootFolderClass || ![folderClass isSubclassOfClass:rootFolderClass]) return original;
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled") || !prefBool(p, @"homeGridEnabled")) return original;
@@ -931,7 +1245,7 @@ static void sbc_hook_grid_getter(const char *className, const char *selName, IMP
 static BOOL sbc_list_is_root(id model) {
     if (![model respondsToSelector:@selector(folder)]) return NO;
     id folder = [model performSelector:@selector(folder)];
-    Class rootFolderClass = objc_getClass("SBRootFolder");
+    Class rootFolderClass = sbc_root_folder_class();
     return folder && rootFolderClass && [folder isKindOfClass:rootFolderClass];
 }
 
@@ -966,14 +1280,14 @@ static BOOL sbc_free_icon_placement_enabled(void) {
 static BOOL sbc_free_widget_layout_enabled(void) {
     NSDictionary *p = sbc_prefs();
     if (!prefBool(p, @"enabled") || !prefBool(p, @"homeGridEnabled")) return NO;
-    return [NSProcessInfo processInfo].operatingSystemVersion.majorVersion >= 18 ||
+    return sbc_os_major() >= 18 ||
            prefBool(p, @"freeIconPlacement");
 }
 
 static unsigned long long (*sbc_orig_model_layout_behavior)(id, SEL, Class) = NULL;
 static unsigned long long sbc_model_layout_behavior(id self, SEL _cmd, Class folderClass) {
     unsigned long long r = sbc_orig_model_layout_behavior(self, _cmd, folderClass);
-    Class rootFolderClass = objc_getClass("SBRootFolder");
+    Class rootFolderClass = sbc_root_folder_class();
     if (folderClass && rootFolderClass && [folderClass isSubclassOfClass:rootFolderClass] &&
         sbc_free_widget_layout_enabled())
         r |= SBC_LAYOUT_ANY_ROW_AND_COLUMN;
@@ -983,7 +1297,7 @@ static unsigned long long sbc_model_layout_behavior(id self, SEL _cmd, Class fol
 static unsigned long long (*sbc_orig_folder_layout_behavior)(id, SEL) = NULL;
 static unsigned long long sbc_folder_layout_behavior(id self, SEL _cmd) {
     unsigned long long r = sbc_orig_folder_layout_behavior(self, _cmd);
-    Class rootFolderClass = objc_getClass("SBRootFolder");
+    Class rootFolderClass = sbc_root_folder_class();
     if (rootFolderClass && [self isKindOfClass:rootFolderClass] && sbc_free_widget_layout_enabled())
         r |= SBC_LAYOUT_ANY_ROW_AND_COLUMN;
     return r;
@@ -1114,7 +1428,7 @@ static long long sbc_free_fixed_behavior(long long behavior) {
 static long long (*sbc_orig_model_fixed_behavior)(id, SEL, Class) = NULL;
 static long long sbc_model_fixed_behavior(id self, SEL _cmd, Class folderClass) {
     long long r = sbc_orig_model_fixed_behavior(self, _cmd, folderClass);
-    Class rootFolderClass = objc_getClass("SBRootFolder");
+    Class rootFolderClass = sbc_root_folder_class();
     if (folderClass && rootFolderClass && [folderClass isSubclassOfClass:rootFolderClass] &&
         sbc_free_icon_placement_enabled())
         r = sbc_free_fixed_behavior(r);
@@ -1124,7 +1438,7 @@ static long long sbc_model_fixed_behavior(id self, SEL _cmd, Class folderClass) 
 static long long (*sbc_orig_folder_fixed_behavior)(id, SEL) = NULL;
 static long long sbc_folder_fixed_behavior(id self, SEL _cmd) {
     long long r = sbc_orig_folder_fixed_behavior(self, _cmd);
-    Class rootFolderClass = objc_getClass("SBRootFolder");
+    Class rootFolderClass = sbc_root_folder_class();
     if (rootFolderClass && [self isKindOfClass:rootFolderClass] && sbc_free_icon_placement_enabled())
         r = sbc_free_fixed_behavior(r);
     return r;
@@ -1194,7 +1508,7 @@ static void sbc_snap_perform_drop(id self, SEL _cmd, id drop, id identifier, id 
 
 static id (*sbc_orig_folder_insert_at_path)(id, SEL, id, id, unsigned long long) = NULL;
 static id sbc_folder_insert_at_path(id self, SEL _cmd, id icon, id gridPath, unsigned long long options) {
-    Class rootFolderClass = objc_getClass("SBRootFolder");
+    Class rootFolderClass = sbc_root_folder_class();
     if (sbc_snap_drop && rootFolderClass && [self isKindOfClass:rootFolderClass])
         options |= SBC_SNAP_DROP_OPTIONS;
     return sbc_orig_folder_insert_at_path(self, _cmd, icon, gridPath, options);
@@ -1275,7 +1589,7 @@ static void sbc_install_ios17_snap_hooks(void) {
 }
 
 static void sbc_install_home_layout_hooks(void) {
-    NSInteger major = [NSProcessInfo processInfo].operatingSystemVersion.majorVersion;
+    NSInteger major = sbc_os_major();
     if (major < 17) return;
     // Free widget placement: iOS 17 and later.
     sbc_hook_layout_behavior("SBHIconModel", "listsIconLayoutBehaviorForFolderClass:", 3,
@@ -1327,20 +1641,15 @@ static void sbc_patch_root_config(id cfg) {
 
     int hsCols       = clampi((int)prefInt(p, @"hsCols"), 1, 10);
     int hsRows       = clampi((int)prefInt(p, @"hsRows"), 1, 10);
-    double exL = prefDouble(p, @"homeExL"), exR = prefDouble(p, @"homeExR");
-    double exT = prefDouble(p, @"homeExT"), exB = prefDouble(p, @"homeExB");
     double homeScale = prefDouble(p, @"homeScale");
 
     if (prefBool(p, @"homeGridEnabled") &&
         [cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)]) {
-        [cfg setNumberOfPortraitColumns:(NSUInteger)hsCols];
-        if ([cfg respondsToSelector:@selector(setNumberOfPortraitRows:)])
-            [cfg setNumberOfPortraitRows:(NSUInteger)hsRows];
+        sbc_write_columns(cfg, (NSUInteger)hsCols);
+        sbc_write_rows(cfg, (NSUInteger)hsRows);
     }
-    if (prefBool(p, @"homeSpacingEnabled") &&
-        [cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
-        [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(60.0 + exT, 27.0 + exL,
-                                                    100.0 + exB, 27.0 + exR)];
+    if (prefBool(p, @"homeSpacingEnabled"))
+        sbc_write_insets(cfg, sbc_home_insets(p, sbc_base_insets(cfg, sbc_stored_insets(cfg))));
     if (prefBool(p, @"homeScaleEnabled") &&
         homeScale > 0.0 && homeScale <= 2.0 &&
         [cfg respondsToSelector:@selector(setIconImageInfo:)] &&
@@ -1359,18 +1668,13 @@ static void sbc_patch_dock_config(id dock) {
     if (!prefBool(p, @"enabled")) return;
 
     int dockIcons    = clampi((int)prefInt(p, @"dockIcons"), 1, 8);
-    double dockExL   = prefDouble(p, @"dockExL");
-    double dockExR   = prefDouble(p, @"dockExR");
     double dockScale = prefDouble(p, @"dockScale");
 
     id cfg = dock_layout_config(dock);
-    if (prefBool(p, @"dockLayoutEnabled") &&
-        [cfg respondsToSelector:@selector(setNumberOfPortraitColumns:)])
-        [cfg setNumberOfPortraitColumns:(NSUInteger)dockIcons];
-    if (prefBool(p, @"dockSpacingEnabled") &&
-        [cfg respondsToSelector:@selector(setPortraitLayoutInsets:)])
-        [cfg setPortraitLayoutInsets:UIEdgeInsetsMake(0.0, 16.0 + dockExL,
-                                                    0.0, 16.0 + dockExR)];
+    if (prefBool(p, @"dockLayoutEnabled"))
+        sbc_write_columns(cfg, (NSUInteger)dockIcons);
+    if (prefBool(p, @"dockSpacingEnabled"))
+        sbc_write_insets(cfg, sbc_dock_insets(p, sbc_base_insets(cfg, sbc_stored_insets(cfg))));
     if (prefBool(p, @"dockScaleEnabled") &&
         dockScale > 0.0 && dockScale <= 2.0 &&
         [cfg respondsToSelector:@selector(setIconImageInfo:)] &&
@@ -1430,12 +1734,10 @@ static void sbc_patch_dock_config(id dock) {
 // persistently beats the one-shot remote poke, which raced with SpringBoard
 // repopulating the list on iOS 17.
 //
-// Live single-key read through CFPreferences (the same channel the Settings
-// pane writes through), unlike the cached sbc_prefs() used by the layout
-// hooks — the cached value could be stale or not yet flushed by cfprefsd,
-// which made the integrated version fail where the unconditional standalone
-// tweak worked. The feature switches are self-contained: they are NOT gated
-// by the master "enabled" switch.
+// The *_live readers share sbc_prefs()'s cache, which the apply notification
+// reloads after every change in the Settings pane, so a switch still applies
+// without a respring. Every feature switch is gated by the master "enabled"
+// switch; "enabled" itself is not.
 
 static BOOL sbc_pref_bool_live(CFStringRef key) {
     NSDictionary *prefs = sbc_prefs();
@@ -1488,14 +1790,22 @@ static void sbc_set_indicator_offset(UIView *indicator, CGPoint offset) {
                                                            &sbc_indicator_last_transform_key);
     NSValue *lastOffsetValue = objc_getAssociatedObject(indicator,
                                                         &sbc_indicator_last_offset_key);
+    // Never moved and nothing to move: leave the view alone.
+    if (!lastTransformValue && CGPointEqualToPoint(offset, CGPointZero)) return;
+
+    BOOL replaced = lastTransformValue &&
+        !CGAffineTransformEqualToTransform(current, [lastTransformValue CGAffineTransformValue]);
+    // Both layout passes call this; when nothing changed since the last one
+    // there is nothing to write.
+    if (!replaced && lastOffsetValue &&
+        CGPointEqualToPoint([lastOffsetValue CGPointValue], offset))
+        return;
+
     CGAffineTransform base = baseValue ? [baseValue CGAffineTransformValue] : current;
 
     // If SpringBoard legitimately replaced the transform (rather than merely
     // laying out the center again), adopt that as the new stock transform.
-    if (lastTransformValue &&
-        !CGAffineTransformEqualToTransform(current,
-                                           [lastTransformValue CGAffineTransformValue]))
-        base = current;
+    if (replaced) base = current;
 
     CGAffineTransform applied = CGAffineTransformTranslate(base, offset.x, offset.y);
     indicator.transform = applied;
@@ -1508,7 +1818,6 @@ static void sbc_set_indicator_offset(UIView *indicator, CGPoint offset) {
     objc_setAssociatedObject(indicator, &sbc_indicator_last_offset_key,
                              [NSValue valueWithCGPoint:offset],
                              OBJC_ASSOCIATION_RETAIN_NONATOMIC);
-    (void)lastOffsetValue;
 }
 
 static void sbc_apply_root_indicator_offset(SBRootFolderView *rootView) {
@@ -1617,9 +1926,10 @@ static void sbc_poke_trailing(id obj) {
 //     container), not on CSMainPageContentViewController's view — on iPad the
 //     main page content is a centered column, so edge taps never reached a
 //     recognizer attached there and double-tap only worked mid-screen.
-// Each area has its own switch (dtlHomeScreen / dtlLockScreen), read live;
-// since recognizers are installed when the views appear, changes fully take
-// effect after a respring.
+// Each area has its own switch (dtlHomeScreen / dtlLockScreen), read live.
+// Recognizers are installed when the views appear, so switching one on takes
+// a respring; switching it off applies at once, because the delegate then
+// refuses to let the gesture begin.
 
 @interface CSCoverSheetViewController : UIViewController
 @end
@@ -1661,6 +1971,7 @@ static BOOL sbt_view_contains_visible_passcode_ui(UIView *view) {
 // including empty areas outside the keypad itself. This walks the whole
 // window, so it runs once per recognized double-tap rather than per touch.
 - (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    if (!sbc_pref_bool_live(CFSTR("dtlLockScreen"))) return NO;
     UIView *root = gestureRecognizer.view;
     return !sbt_view_contains_visible_passcode_ui(root.window ?: root);
 }
@@ -1681,6 +1992,10 @@ static BOOL sbt_view_contains_visible_passcode_ui(UIView *view) {
 @end
 
 @implementation SBTHomeDoubleTapDelegate
+- (BOOL)gestureRecognizerShouldBegin:(UIGestureRecognizer *)gestureRecognizer {
+    return sbc_pref_bool_live(CFSTR("dtlHomeScreen"));
+}
+
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
     Class iconViewClass = %c(SBIconView);
@@ -1863,8 +2178,12 @@ static bool find_drag(drag_t *o)
 
 static void override_drag_coefficient(double v)
 {
-    drag_t d;
-    if (!find_drag(&d)) { NSLog(@"[SBT:DRAG] find_drag failed"); return; }
+    // The location never moves within a process, so the disassembly runs once.
+    static drag_t d;
+    static bool found = false;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ found = find_drag(&d); });
+    if (!found) { NSLog(@"[SBT:DRAG] find_drag failed"); return; }
 
     if (d.gated) {                                  // iOS 18+/26: rev + sentinel + double
         uint32_t *revVar = (uint32_t *)d.revVar;
@@ -1886,14 +2205,23 @@ static void override_drag_coefficient(double v)
     }
 }
 
+// Whether the global currently holds a value written here. Switching the
+// option off (or back to 1.0) then writes the stock value back once; a
+// global this tweak never touched is still left alone.
+static BOOL sbc_drag_overridden = NO;
+
 static void sbc_apply_drag_coefficient(void) {
     NSDictionary *p = sbc_prefs();
-    if (!prefBool(p, @"enabled")) return;
-    if (!prefBool(p, @"dragCoefficientEnabled")) return;
     double v = sbc_pref_double_live(CFSTR("dragCoefficient"));
-    if (v < 0.01 || v > 2.0) return;
-    if (fabs(v - 1.0) < 1e-9) return; // stock — leave the global untouched
-    override_drag_coefficient(v);
+    BOOL custom = prefBool(p, @"enabled") && prefBool(p, @"dragCoefficientEnabled") &&
+                  v >= 0.01 && v <= 2.0 && fabs(v - 1.0) >= 1e-9;
+    if (custom) {
+        override_drag_coefficient(v);
+        sbc_drag_overridden = YES;
+    } else if (sbc_drag_overridden) {
+        override_drag_coefficient(1.0);
+        sbc_drag_overridden = NO;
+    }
 }
 
 // Adding a widget runs SpringBoard animations that UIKit's coefficient scales
@@ -1906,7 +2234,6 @@ static void sbc_apply_drag_coefficient(void) {
 // coefficient is restored when a widget is chosen and the configured one
 // re-applied once the flow is over (3 s) and the Home Screen has left edit
 // mode or an app is in front, and after 60 s at the latest.
-static NSUInteger sbc_drag_suspend_token = 0;
 static BOOL sbc_drag_suspended = NO;
 static CFAbsoluteTime sbc_drag_suspended_at = 0;
 static dispatch_source_t sbc_drag_poll = NULL;
@@ -1942,7 +2269,6 @@ static void sbc_suspend_drag_coefficient(void) {
     if (!prefBool(p, @"enabled") || !prefBool(p, @"dragCoefficientEnabled")) return;
     double v = sbc_pref_double_live(CFSTR("dragCoefficient"));
     if (v < 0.01 || v > 2.0 || fabs(v - 1.0) < 1e-9) return;
-    ++sbc_drag_suspend_token;
     sbc_drag_suspended = YES;
     sbc_drag_suspended_at = CFAbsoluteTimeGetCurrent();
     override_drag_coefficient(1.0);
@@ -1993,41 +2319,83 @@ static void sbc_install_add_widget_hooks(void) {
 // ------------------------------------------------ wake/sleep & icon fly-in
 //
 // Simplified after Speedster (github.com/Hoangdus/Speedster): plain getter
-// hooks replace the previous fetch-and-ivar-poke machinery (which poked
-// _animationSettingsForBacklightChangeSource:isWake: results). The mapping
-// on SBFWakeAnimationSettings is:
-//   backlightFadeDuration        -> screen OFF (sleep)
-//   speedMultiplierForWake       -> screen ON (wake)
-//   speedMultiplierForLiftToWake -> screen ON (lift to wake)
-// ------------------------------------------------ wake/sleep & icon fly-in
+// hooks instead of poking the settings object's ivars.
 //
 // iOS 17 reality (confirmed on-device):
-//   sleep (screen off) is governed by backlightFadeDuration alone.
-//   wake  (screen on)  is gated by backlightFadeDuration AND the
-//   speedMultiplierForWake/LiftToWake values — the multipliers alone do
-//   nothing while the fade ramp is non-zero.
-// backlightFadeDuration is ONE getter shared by both transitions, so
-// per-direction switches need to know which transition is running. The
-// controller fetches its settings via
-// _animationSettingsForBacklightChangeSource:isWake: at transition time —
-// track that flag and scope the getter by current transition. Each switch
-// is then self-contained like the darksword originals:
-//   wake:  fade 0 + multipliers 1000   iff noWakeAnim
-//   sleep: fade 0                      iff noSleepFade
+//   sleep (screen off) is governed by the backlight fade duration alone.
+//   wake  (screen on)  is gated by the fade duration AND the animation
+//   speed — the speed alone does nothing while the fade ramp is non-zero.
+// The fade duration is one setting shared by both transitions, so each
+// switch has to know which transition is running:
+//   wake:  fade 0 + speed kSBTWakeSpeed   iff noWakeAnim
+//   sleep: fade 0                         iff noSleepFade
+// WakeExact hooks the class methods that are handed isWake; WakeLegacy, for
+// versions without them, remembers the flag from the last settings fetch.
 // Read live, so the toggles are instant.
 
 static BOOL sbt_transition_is_wake = YES;
+static const double kSBTWakeSpeed = 10.0;
 
-%group SpringBoard
+// Preferred path: both of these class methods are handed isWake directly, so
+// which transition is in flight is never in doubt.
+//
+// +backlightFadeDurationForSource:isWake: is the only consumer of
+// backlightFadeDuration in SpringBoard. It computes
+//     [rootSettings backlightFadeDuration] / _animationSpeedFor...
+// reading the settings getter itself rather than going through
+// -_animationSettingsForBacklightChangeSource:isWake:. That is why the shared
+// sbt_transition_is_wake flag below is unreliable: on a wake the fade can be
+// asked for before the settings call has flipped the flag, so the getter
+// answers from the sleep branch and hands back the stock fade instead of 0.
+// Ordering decides it, which makes the fault intermittent.
+%group WakeExact
+%hook SBScreenWakeAnimationController
++ (double)backlightFadeDurationForSource:(long long)source isWake:(BOOL)wake {
+    BOOL off = sbc_pref_bool_live(wake ? CFSTR("noWakeAnim") : CFSTR("noSleepFade"));
+#if SBT_WAKE_TRACE
+    double stock = %orig;
+    SBT_TRACE("+fade %s src=%lld stock=%.3f -> %.3f", wake ? "wake" : "sleep", source,
+              stock, off ? 0.0 : stock);
+    return off ? 0 : stock;
+#else
+    if (off) return 0;
+    return %orig;
+#endif
+}
+
++ (double)_animationSpeedForBacklightChangeSource:(long long)source isWake:(BOOL)wake {
+    // One value instead of two multiplied together. See kSBTWakeSpeed.
+    BOOL fast = wake && sbc_pref_bool_live(CFSTR("noWakeAnim"));
+#if SBT_WAKE_TRACE
+    double stock = %orig;
+    SBT_TRACE("+speed %s src=%lld stock=%.3f -> %.3f", wake ? "wake" : "sleep", source,
+              stock, fast ? kSBTWakeSpeed : stock);
+    return fast ? kSBTWakeSpeed : stock;
+#else
+    if (fast) return kSBTWakeSpeed;
+    return %orig;
+#endif
+}
+%end
+%end
+
+
+// Fallback for versions without those class methods: the instance getter plus
+// a flag remembered from the last transition.
+%group WakeLegacy
 %hook SBScreenWakeAnimationController
 - (id)_animationSettingsForBacklightChangeSource:(long long)source isWake:(BOOL)wake {
-    if (wake != sbt_transition_is_wake)
-        NSLog(@"[SBT:WAKE] transition -> %s (src=%lld)", wake ? "wake" : "sleep", source);
+    SBT_TRACE("-settings %s src=%lld (legacy flag was %s)", wake ? "wake" : "sleep", source,
+              sbt_transition_is_wake ? "wake" : "sleep");
+#if SBT_WAKE_TRACE
+    if (wake) sbt_trace_schedule_snapshots();
+#endif
     sbt_transition_is_wake = wake;
     return %orig(source, wake);
 }
 
 - (double)backlightFadeDuration {
+    SBT_TRACE("-controller fade, flag=%s", sbt_transition_is_wake ? "wake" : "sleep");
     if (sbt_transition_is_wake)
         return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 0 : %orig;
     return sbc_pref_bool_live(CFSTR("noSleepFade")) ? 0 : %orig;
@@ -2035,21 +2403,252 @@ static BOOL sbt_transition_is_wake = YES;
 %end
 %end
 
-%group SpringBoard
+%group WakeLegacy
 %hook SBFWakeAnimationSettings
 - (double)backlightFadeDuration {
+    SBT_TRACE("-settings fade, flag=%s", sbt_transition_is_wake ? "wake" : "sleep");
     if (sbt_transition_is_wake)
         return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 0 : %orig;
     return sbc_pref_bool_live(CFSTR("noSleepFade")) ? 0 : %orig;
 }
+// +[SBScreenWakeAnimationController _animationSpeedForBacklightChangeSource:
+// isWake:] takes speedMultiplierForLiftToWake for a lift-to-wake source and
+// then MULTIPLIES it by speedMultiplierForWake. Returning a large value from
+// both therefore compounded: 1000 x 1000 = 1000000.
+//
+// That matters because the wake sequence hides the Lock Screen views
+// (_setRelevantLockScreenViewsHidden:) and unhides them from the animation's
+// completion. At an absurd speed the completion is mishandled and the clock
+// stays hidden for seconds -- seen on iPadOS 15. A modest speed still makes a
+// ~0.5s animation imperceptible (0.05s) while staying inside the range
+// SpringBoard is written for, and the lift multiplier is left neutral so the
+// two can no longer compound.
 - (double)speedMultiplierForWake {
-    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 1000 : %orig;
+    SBT_TRACE("-speedMultiplierForWake");
+    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? kSBTWakeSpeed : %orig;
 }
 - (double)speedMultiplierForLiftToWake {
-    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 1000 : %orig;
+    SBT_TRACE("-speedMultiplierForLiftToWake");
+    return sbc_pref_bool_live(CFSTR("noWakeAnim")) ? 1.0 : %orig;
 }
 %end
 %end
+
+#if SBT_WAKE_TRACE
+// The Lock Screen views (clock, date) are hidden while the screen wakes and
+// shown again from the animation's completion. Which class does that, and
+// under which name, differs between versions, so the trace build looks in
+// SpringBoard's, CoverSheet's and SpringBoardFoundation's own classes for
+// one-BOOL methods that hide or show Lock Screen, date or clock views, and
+// logs every call.
+//
+// The clock view itself (any UIView class with "DateView" in its name, e.g.
+// SBFLockScreenDateView) additionally logs being hidden, faded, put into a
+// window and removed. After every wake its effective visibility is sampled
+// for a few seconds, naming the view or ancestor that hides it, if any.
+static NSMutableArray<Class> *sbt_trace_date_view_classes;
+
+static NSHashTable *sbt_trace_date_views(void) {
+    static NSHashTable *views;
+    static dispatch_once_t once;
+    dispatch_once(&once, ^{ views = [NSHashTable weakObjectsHashTable]; });
+    return views;
+}
+
+static BOOL sbt_trace_selector_matches(const char *name) {
+    if (!strstr(name, "Hidden") && !strstr(name, "Visible")) return NO;
+    return strstr(name, "LockScreen") || strstr(name, "DateView") || strstr(name, "Clock");
+}
+
+static Method sbt_trace_own_method(Class cls, SEL sel) {
+    unsigned int count = 0;
+    Method *methods = class_copyMethodList(cls, &count);
+    Method found = NULL;
+    for (unsigned int i = 0; i < count && !found; i++)
+        if (method_getName(methods[i]) == sel) found = methods[i];
+    free(methods);
+    return found;
+}
+
+// Wraps `sel` on `cls` itself: its own implementation, or an added override
+// calling the superclass's when the method is only inherited.
+static void sbt_trace_wrap(Class cls, SEL sel, const char *types, id (^make)(IMP (^next)(void))) {
+    Method own = sbt_trace_own_method(cls, sel);
+    if (own) {
+        IMP orig = method_getImplementation(own);
+        method_setImplementation(own, imp_implementationWithBlock(make(^IMP { return orig; })));
+    } else {
+        Class superclass = class_getSuperclass(cls);
+        class_addMethod(cls, sel, imp_implementationWithBlock(make(^IMP {
+            return class_getMethodImplementation(superclass, sel);
+        })), types);
+    }
+}
+
+static void sbt_trace_date_view_class(Class cls) {
+    NSString *name = NSStringFromClass(cls);
+    sbt_trace_wrap(cls, @selector(setHidden:), "v20@0:8B16", ^id(IMP (^next)(void)) {
+        return ^(UIView *me, BOOL value) {
+            [sbt_trace_date_views() addObject:me];
+            if (value != me.hidden) SBT_TRACE("%@ %p setHidden:%d", name, me, value);
+            ((void (*)(id, SEL, BOOL))next())(me, @selector(setHidden:), value);
+        };
+    });
+    sbt_trace_wrap(cls, @selector(setAlpha:), "v24@0:8d16", ^id(IMP (^next)(void)) {
+        return ^(UIView *me, CGFloat value) {
+            [sbt_trace_date_views() addObject:me];
+            if (fabs(value - me.alpha) > 0.001)
+                SBT_TRACE("%@ %p setAlpha:%.2f (was %.2f)", name, me, value, me.alpha);
+            ((void (*)(id, SEL, CGFloat))next())(me, @selector(setAlpha:), value);
+        };
+    });
+    sbt_trace_wrap(cls, @selector(didMoveToWindow), "v16@0:8", ^id(IMP (^next)(void)) {
+        return ^(UIView *me) {
+            [sbt_trace_date_views() addObject:me];
+            ((void (*)(id, SEL))next())(me, @selector(didMoveToWindow));
+            SBT_TRACE("%@ %p %s window", name, me, me.window ? "entered" : "left");
+        };
+    });
+    sbt_trace_wrap(cls, @selector(removeFromSuperview), "v16@0:8", ^id(IMP (^next)(void)) {
+        return ^(UIView *me) {
+            SBT_TRACE("%@ %p removeFromSuperview", name, me);
+            ((void (*)(id, SEL))next())(me, @selector(removeFromSuperview));
+        };
+    });
+    SBT_TRACE("tracing clock view class %@", name);
+}
+
+static void sbt_trace_scan_image(const char *image, NSMutableArray<Class> *dateViewClasses) {
+    unsigned int classCount = 0;
+    const char **names = objc_copyClassNamesForImage(image, &classCount);
+    for (unsigned int i = 0; i < classCount; i++) {
+        Class cls = objc_getClass(names[i]);
+        if (!cls) continue;
+        if (strstr(names[i], "DateView") && [cls isSubclassOfClass:[UIView class]])
+            [dateViewClasses addObject:cls];
+        for (int meta = 0; meta < 2; meta++) {
+            Class target = meta ? object_getClass(cls) : cls;
+            unsigned int methodCount = 0;
+            Method *methods = class_copyMethodList(target, &methodCount);
+            for (unsigned int j = 0; j < methodCount; j++) {
+                SEL sel = method_getName(methods[j]);
+                const char *selName = sel_getName(sel);
+                // UIView's own setters are traced per clock view class instead.
+                if (sel == @selector(setHidden:) || !sbt_trace_selector_matches(selName)) continue;
+                const char *enc = method_getTypeEncoding(methods[j]);
+                NSString *label = [NSString stringWithFormat:@"%c[%s %s]",
+                                   meta ? '+' : '-', names[i], selName];
+                if (!enc || (strcmp(enc, "v20@0:8B16") != 0 && strcmp(enc, "v20@0:8c16") != 0)) {
+                    SBT_TRACE("seen %@ (%s), not traced", label, enc ?: "?");
+                    continue;
+                }
+                IMP orig = method_getImplementation(methods[j]);
+                method_setImplementation(methods[j], imp_implementationWithBlock(^(id me, BOOL value) {
+                    SBT_TRACE("%@ %s", label, value ? "YES" : "NO");
+                    ((void (*)(id, SEL, BOOL))orig)(me, sel, value);
+                }));
+                SBT_TRACE("tracing %@", label);
+            }
+            free(methods);
+        }
+    }
+    free(names);
+}
+
+static void sbt_trace_collect_date_views(UIView *view, NSMutableSet *found) {
+    for (Class cls in sbt_trace_date_view_classes)
+        if ([view isKindOfClass:cls]) { [found addObject:view]; break; }
+    for (UIView *subview in view.subviews) sbt_trace_collect_date_views(subview, found);
+}
+
+// Hidden, transparent, or shown transparent by a running animation: the
+// view itself or the first ancestor that keeps it from being seen.
+static NSString *sbt_trace_view_state(UIView *view) {
+    NSString *blocker = nil;
+    for (UIView *v = view; v && !blocker; v = v.superview) {
+        CALayer *shown = v.layer.presentationLayer ?: v.layer;
+        if (v.hidden) blocker = @"hidden";
+        else if (v.alpha < 0.01) blocker = @"alpha 0";
+        else if (shown.opacity < 0.01) blocker = @"animating at opacity 0";
+        if (blocker) blocker = [NSString stringWithFormat:@"%@ %p %@", NSStringFromClass([v class]), v, blocker];
+    }
+    CALayer *shown = view.layer.presentationLayer ?: view.layer;
+    return [NSString stringWithFormat:@"%@ %p hidden=%d alpha=%.2f shown=%.2f window=%d -> %@",
+            NSStringFromClass([view class]), view, view.hidden, view.alpha, shown.opacity,
+            view.window != nil, blocker ? [@"blocked by " stringByAppendingString:blocker] : @"visible"];
+}
+
+static void sbt_trace_snapshot(NSString *when) {
+    NSMutableSet *views = [NSMutableSet setWithArray:sbt_trace_date_views().allObjects];
+    // Every window, SpringBoard's internal ones included; scene windows as a
+    // fallback where the private class method is missing.
+    NSArray *windows = nil;
+    SEL all = NSSelectorFromString(@"allWindowsIncludingInternalWindows:onlyVisibleWindows:");
+    if ([UIWindow respondsToSelector:all])
+        windows = ((NSArray *(*)(id, SEL, BOOL, BOOL))objc_msgSend)([UIWindow class], all, YES, NO);
+    if (!windows) {
+        NSMutableArray *sceneWindows = [NSMutableArray array];
+        for (UIScene *scene in [UIApplication sharedApplication].connectedScenes)
+            if ([scene isKindOfClass:[UIWindowScene class]])
+                [sceneWindows addObjectsFromArray:((UIWindowScene *)scene).windows];
+        windows = sceneWindows;
+    }
+    for (UIWindow *window in windows) sbt_trace_collect_date_views(window, views);
+    if (!views.count) { SBT_TRACE("clock %@: no clock view found", when); return; }
+    for (UIView *view in views) {
+        if (!view.window) continue;
+        SBT_TRACE("clock %@: %@", when, sbt_trace_view_state(view));
+    }
+}
+
+static void sbt_trace_schedule_snapshots(void) {
+    for (NSNumber *delay in @[@0.1, @0.3, @0.6, @1, @2, @3, @5, @8]) {
+        dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(delay.doubleValue * NSEC_PER_SEC)),
+                       dispatch_get_main_queue(), ^{
+            sbt_trace_snapshot([NSString stringWithFormat:@"+%.1fs", delay.doubleValue]);
+        });
+    }
+}
+
+// Which transition SpringBoard sets up, alongside the exact hooks (the
+// legacy group hooks this method itself).
+static id (*sbt_trace_orig_settings)(id, SEL, long long, BOOL) = NULL;
+static id sbt_trace_settings(id self, SEL _cmd, long long source, BOOL wake) {
+    SBT_TRACE("-settings %s src=%lld", wake ? "wake" : "sleep", source);
+    if (wake) sbt_trace_schedule_snapshots();
+    return sbt_trace_orig_settings(self, _cmd, source, wake);
+}
+
+static void sbt_trace_install_settings_hook(void) {
+    Class cls = objc_getClass("SBScreenWakeAnimationController");
+    SEL sel = @selector(_animationSettingsForBacklightChangeSource:isWake:);
+    if (cls && class_getInstanceMethod(cls, sel))
+        MSHookMessageEx(cls, sel, (IMP)sbt_trace_settings, (IMP *)&sbt_trace_orig_settings);
+}
+
+static void sbt_trace_install_view_hooks(void) {
+    NSMutableSet *images = [NSMutableSet set];
+    for (NSString *name in @[@"SBScreenWakeAnimationController", @"CSCoverSheetViewController",
+                             @"SBFLockScreenDateView", @"SBFWakeAnimationSettings"]) {
+        Class cls = NSClassFromString(name);
+        const char *image = cls ? class_getImageName(cls) : NULL;
+        if (image) [images addObject:@(image)];
+    }
+    NSMutableArray<Class> *dateViewClasses = [NSMutableArray array];
+    for (NSString *image in images) sbt_trace_scan_image(image.UTF8String, dateViewClasses);
+
+    // A subclass calls into its traced superclass, so only the topmost
+    // clock view classes are wrapped; snapshots still find every subclass.
+    sbt_trace_date_view_classes = dateViewClasses;
+    for (Class cls in dateViewClasses) {
+        BOOL nested = NO;
+        for (Class other in dateViewClasses)
+            if (other != cls && [cls isSubclassOfClass:other]) nested = YES;
+        if (!nested) sbt_trace_date_view_class(cls);
+    }
+    if (!dateViewClasses.count) SBT_TRACE("no clock view class found");
+}
+#endif
 
 %group SpringBoard
 %hook CSCoverSheetTransitionSettings
@@ -2074,7 +2673,8 @@ static BOOL sbt_is_springboard = NO;
 //   bit 1        Dismiss Spotlight after opening a result
 //   bit 3        Fast Page Transitions
 //   bit 4        Fast Sheets
-//   bits 16-31   Transition Duration in ms, shared by bits 3 and 4
+//   bits 16-31   Fast Page Transitions duration in ms
+//   bits 32-47   Fast Sheets duration in ms
 
 static const char *const kSBTAppStateName = "cz.kolbi.sbtweaker/appState";
 #define SBT_APP_FAST_COPY          (1ULL << 0)
@@ -2082,6 +2682,7 @@ static const char *const kSBTAppStateName = "cz.kolbi.sbtweaker/appState";
 #define SBT_APP_PAGE_TRANSITIONS   (1ULL << 3)
 #define SBT_APP_SHEETS             (1ULL << 4)
 #define SBT_APP_SLIDE_SHIFT        16
+#define SBT_APP_SHEETS_SHIFT       32
 static const double kNSMinDuration = 0.01, kNSMaxDuration = 1.0;
 
 static int sbt_app_state_token(void) {
@@ -2103,8 +2704,9 @@ static uint64_t sbt_app_state(void) {
     return state;
 }
 
-// Same value, cached for hooks that run on every animation. Refreshed on the
-// main queue whenever SpringBoard republishes.
+// Same value, cached so the hooks never make a notify round-trip. Refreshed on
+// the main queue whenever SpringBoard republishes (and at once in SpringBoard
+// itself, which publishes it).
 static uint64_t sbt_cached_app_state = 0;
 
 static void sbt_watch_app_state(void) {
@@ -2124,9 +2726,16 @@ static void sbt_publish_app_state(void) {
     if (sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"))) state |= SBT_APP_DISMISS_SPOTLIGHT;
     if (sbc_pref_bool_live(CFSTR("noSlide"))) state |= SBT_APP_PAGE_TRANSITIONS;
     if (sbc_pref_bool_live(CFSTR("fastSheets"))) state |= SBT_APP_SHEETS;
-    double d = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
-    state |= (uint64_t)llround(d * 1000.0) << SBT_APP_SLIDE_SHIFT;
+    double slide = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
+    // Until the Settings pane has migrated it, the key is missing; keep the
+    // shared duration it used to have rather than the 0.01 default.
+    double sheets = sbc_prefs()[@"fastSheetsDuration"]
+        ? MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("fastSheetsDuration"))))
+        : slide;
+    state |= (uint64_t)llround(slide * 1000.0) << SBT_APP_SLIDE_SHIFT;
+    state |= (uint64_t)llround(sheets * 1000.0) << SBT_APP_SHEETS_SHIFT;
     notify_set_state(token, state);
+    sbt_cached_app_state = state;
     notify_post(kSBTAppStateName);
 }
 
@@ -2137,7 +2746,7 @@ static void sbt_publish_app_state(void) {
 %group FastCopy
 %hook UITextSelectionView
 - (void)showCalloutBarAfterDelay:(double)arg1 {
-    %orig((sbt_app_state() & SBT_APP_FAST_COPY) ? 0 : arg1);
+    %orig((sbt_cached_app_state & SBT_APP_FAST_COPY) ? 0 : arg1);
 }
 %end
 %end
@@ -2161,9 +2770,13 @@ static void sbt_publish_app_state(void) {
 // Target duration in seconds when `feature` is on, otherwise 0 (also when the
 // state cannot be read, in which case nothing changes).
 static double ns_durationFor(uint64_t feature) {
-    uint64_t state = sbt_app_state();
+    uint64_t state = sbt_cached_app_state;
     if (!(state & feature)) return 0;
     uint64_t ms = (state >> SBT_APP_SLIDE_SHIFT) & 0xFFFF;
+    // A state published before Fast Sheets had its own duration leaves its
+    // bits empty; it then shares the page transition one as it used to.
+    uint64_t sheetsMs = (state >> SBT_APP_SHEETS_SHIFT) & 0xFFFF;
+    if (feature == SBT_APP_SHEETS && sheetsMs) ms = sheetsMs;
     if (ms == 0) return 0;
     return MIN(kNSMaxDuration, MAX(kNSMinDuration, ms / 1000.0));
 }
@@ -2193,8 +2806,11 @@ static void ns_clampAnimation(CAAnimation *anim, CFTimeInterval target) {
     if (!ns_clampable(anim)) return;
     // Speed the animation up to fit instead of cutting it short, so a spring
     // still settles naturally at longer configured durations.
-    CFTimeInterval active = anim.duration / anim.speed;
-    if (active > target) anim.speed = (float)(anim.duration / target);
+    // A duration of 0 means Core Animation's default of 0.25 s, not instant;
+    // those used to be skipped and ran at full length.
+    CFTimeInterval duration = anim.duration > 0 ? anim.duration : 0.25;
+    CFTimeInterval active = duration / anim.speed;
+    if (active > target) anim.speed = (float)(duration / target);
     // Drop delays too. A delayed animation (e.g. a navigation bar fade that
     // starts a little after the slide) otherwise shows its from-state until
     // the delay runs out — a one-frame flash once everything else is quick.
@@ -2232,24 +2848,38 @@ static const CFTimeInterval kSBTMenuDuration = 0.01;
 %group Layer
 %hook CALayer
 - (void)addAnimation:(CAAnimation *)anim forKey:(NSString *)key {
+    // Never mutate the caller's animation. Apps re-add animations read back
+    // with animationForKey:, which are read-only, and Core Animation refuses
+    // property changes on an animation it already owns: the setter throws an
+    // uncaught ObjC exception that aborts the host process (Signal, WhatsApp,
+    // the App Store, PingID; Spotify from -[CALayer _display]).
+    //
+    // A fresh copy is always mutable, and addAnimation:forKey: copies the
+    // animation itself, so no caller can depend on this object's identity.
+    // The @try is belt and braces: this runs in every app, and a throw here
+    // kills that app rather than just losing the optimisation.
     if (anim && [NSThread isMainThread]) {
         CFTimeInterval target = 0;
         if (ns_clamping)
             target = ns_clampDuration;
         else if ((sbt_cached_app_state & SBT_APP_FAST_COPY) && sbt_layer_in_edit_menu(self))
             target = kSBTMenuDuration;
-        // Clamp a copy: apps re-add animations read back with
-        // animationForKey:, which are read-only, and changing their timing
-        // throws (Signal, WhatsApp, App Store, PingID crashed). Core
-        // Animation copies the animation on add anyway.
         if (target > 0 && ns_clampable(anim)) {
-            CAAnimation *copy = [anim copy];
-            ns_clampAnimation(copy, target);
-            %orig(copy, key);
-            return;
+            @try {
+                CAAnimation *mutable_ = [anim copy];
+                if (mutable_) {
+                    ns_clampAnimation(mutable_, target);
+                    anim = mutable_;
+                }
+            } @catch (__unused NSException *e) {
+                static dispatch_once_t once;
+                dispatch_once(&once, ^{
+                    NSLog(@"[SBT:LAYER] animation refused mutation, left untouched");
+                });
+            }
         }
     }
-    %orig;
+    %orig(anim, key);
 }
 %end
 %end
@@ -2500,6 +3130,8 @@ static void (^ns_clampedCompletion(void (^completion)(void)))(void) {
 %group SpringBoard
 %hook SBIdleTimerGlobalStateMonitor
 - (double)minimumLockscreenIdleTime {
+    SBT_TRACE("-minimumLockscreenIdleTime (lockScreenDurationEnabled=%d)",
+              sbc_pref_bool_live(CFSTR("lockScreenDurationEnabled")));
     if (!sbc_pref_bool_live(CFSTR("lockScreenDurationEnabled"))) return %orig;
     double seconds = sbc_pref_double_live(CFSTR("lockScreenDuration"));
     return seconds > 0.0 ? seconds : %orig;
@@ -2529,7 +3161,7 @@ static void (^ns_clampedCompletion(void (^completion)(void)))(void) {
 // Read from the published app state: half of these hooks run in the
 // sandboxed Spotlight UI process, which cannot read the preferences domain.
 static BOOL sbt_dismiss_spotlight_enabled(void) {
-    return (sbt_app_state() & SBT_APP_DISMISS_SPOTLIGHT) != 0;
+    return (sbt_cached_app_state & SBT_APP_DISMISS_SPOTLIGHT) != 0;
 }
 
 static BOOL sbt_spotlight_is_on_screen(void) {
@@ -2574,8 +3206,7 @@ static void sbt_dismiss_spotlight(void) {
     // transaction's completion, or to a timer — puts it after the return
     // animation has already uncovered the Home Screen, and Spotlight is then
     // visibly sitting there with its results until the dismissal lands.
-    BOOL searchOnScreen = sbt_is_springboard &&
-                          sbt_dismiss_spotlight_enabled() &&
+    BOOL searchOnScreen = sbt_dismiss_spotlight_enabled() &&
                           sbt_spotlight_is_on_screen();
     if (searchOnScreen) sbt_dismiss_spotlight();
     %orig;
@@ -2622,9 +3253,58 @@ static void sbt_dismiss_spotlight(void) {
 
 // ------------------------------------------------------------------ entry
 
+// Every Home Screen configuration that may hold values written here.
+static NSArray *sbc_known_root_configs(id cfg) {
+    NSMutableArray *configs = [[sbc_root_configs() allObjects] mutableCopy];
+    for (id extra in @[cfg ?: [NSNull null], sbc_root_cfg ?: [NSNull null]])
+        if (extra != [NSNull null] && ![configs containsObject:extra]) [configs addObject:extra];
+    return configs;
+}
+
+static void restore_home_grid(NSArray *configs, NSArray *lists) {
+    // From iOS 17 the pages' list models are created with the custom grid
+    // (sbc_root_list_grid), and only a respring builds them again. Showing the
+    // stock grid over those models would misplace icons, so the custom grid
+    // stays until then.
+    if (sbc_is_ios17_or_newer()) return;
+    BOOL restored = NO;
+    for (id cfg in configs) {
+        restored = sbc_restore_native(cfg, @"columns") || restored;
+        restored = sbc_restore_native(cfg, @"rows") || restored;
+    }
+    for (id listView in lists) {
+        if (sbc_restore_native(listView, @"autofit")) restored = YES;
+        [listView setNeedsLayout];
+    }
+    if (restored) NSLog(@"[SBC] home grid restored");
+}
+
+static void restore_home_spacing(NSArray *configs) {
+    BOOL restored = NO;
+    for (id cfg in configs) restored = sbc_restore_native(cfg, @"insets") || restored;
+    if (restored) NSLog(@"[SBC:SPACE] home insets restored");
+}
+
+static void restore_home_scale(id mgr, id cfg, NSArray *configs) {
+    BOOL restored = NO;
+    for (id config in configs) restored = restore_icon_scale(config) || restored;
+    if (!restored || ![cfg respondsToSelector:@selector(iconImageInfo)]) return;
+    refresh_home_icons(mgr, [cfg iconImageInfo]);
+    NSLog(@"[SBC:SCALE] home scale restored");
+}
+
+static void restore_dock_scale(id dock, id dockCfg) {
+    if (!restore_icon_scale(dockCfg) || !dock) return;
+    refresh_list_view_icons(dock, [dockCfg iconImageInfo]);
+    NSLog(@"[SBC:SCALE] dock scale restored");
+}
+
 static void sbc_apply(void) {
     NSDictionary *p = sbc_reload_prefs(); // refresh the cache used by the configuration getter hooks
-    if (!prefBool(p, @"enabled")) { NSLog(@"[SBC] disabled"); return; }
+    // A feature that is off, or everything with the master switch off, gets
+    // SpringBoard's own values back, so switching off needs no respring.
+    BOOL on = prefBool(p, @"enabled");
+    if (!on) NSLog(@"[SBC] disabled, restoring stock values");
 
     int dockIcons    = clampi((int)prefInt(p, @"dockIcons"), 1, 8);
     int hsCols       = clampi((int)prefInt(p, @"hsCols"), 1, 10);
@@ -2644,29 +3324,46 @@ static void sbc_apply(void) {
           dockIcons, hsCols, hsRows, hsColsL, hsRowsL,
           homeExL, homeExR, homeExT, homeExB, dockExL, dockExR, homeScale, dockScale);
 
+    sbc_apply_drag_coefficient();
+
     id iconCtrl = [%c(SBIconController) sharedInstance];
     if (!iconCtrl) { NSLog(@"[SBC] SBIconController missing"); return; }
-    id mgr = [iconCtrl iconManager];
-
-    if (prefBool(p, @"dockLayoutEnabled"))
-        patch_dock(iconCtrl, mgr, dockIcons);
+    id mgr = [iconCtrl respondsToSelector:@selector(iconManager)] ? [iconCtrl iconManager] : nil;
+    if (!mgr) { NSLog(@"[SBC] icon manager missing"); return; }
 
     id cfg = root_layout_config(iconCtrl, mgr);
-    if (cfg && prefBool(p, @"homeGridEnabled"))
-        patch_homescreen_grid(iconCtrl, mgr, cfg, hsCols, hsRows);
-    else if (!cfg) NSLog(@"[SBC] root layoutConfiguration nil");
-
+    if (!cfg) NSLog(@"[SBC] root layoutConfiguration nil");
     id dock = dock_list_view(iconCtrl, mgr);
     id dockCfg = dock_layout_config(dock);
+    NSArray *rootConfigs = sbc_known_root_configs(cfg);
 
-    if (prefBool(p, @"homeSpacingEnabled"))
-        apply_home_spacing(cfg, homeExL, homeExR, homeExT, homeExB);
-    if (prefBool(p, @"dockSpacingEnabled"))
-        apply_dock_spacing(dockCfg, dockExL, dockExR);
-    if (prefBool(p, @"homeScaleEnabled") && homeScale > 0.0)
+    if (on && prefBool(p, @"dockLayoutEnabled"))
+        patch_dock(dock, dockIcons);
+    else
+        restore_dock(dock);
+
+    if (on && prefBool(p, @"homeGridEnabled")) {
+        if (cfg) patch_homescreen_grid(mgr, cfg, hsCols, hsRows);
+    } else {
+        restore_home_grid(rootConfigs, sbc_root_list_views(mgr));
+    }
+
+    if (on && prefBool(p, @"homeSpacingEnabled"))
+        apply_home_spacing(cfg, p);
+    else
+        restore_home_spacing(rootConfigs);
+    if (on && prefBool(p, @"dockSpacingEnabled"))
+        apply_dock_spacing(dockCfg, p);
+    else if (sbc_restore_native(dockCfg, @"insets"))
+        NSLog(@"[SBC:SPACE] dock insets restored");
+    if (on && prefBool(p, @"homeScaleEnabled") && homeScale > 0.0)
         apply_home_scale(mgr, cfg, homeScale);
-    if (prefBool(p, @"dockScaleEnabled") && dockScale > 0.0)
+    else
+        restore_home_scale(mgr, cfg, rootConfigs);
+    if (on && prefBool(p, @"dockScaleEnabled") && dockScale > 0.0)
         apply_dock_scale(dock, dockCfg, dockScale);
+    else
+        restore_dock_scale(dock, dockCfg);
 
     // Re-run the indicator offset against the new preferences.
     id rootFolder = [mgr respondsToSelector:@selector(rootFolderController)]
@@ -2674,8 +3371,6 @@ static void sbc_apply(void) {
     UIView *rootFolderView = [rootFolder respondsToSelector:@selector(rootFolderView)]
         ? [rootFolder rootFolderView] : nil;
     [rootFolderView setNeedsLayout];
-
-    sbc_apply_drag_coefficient();
 
     force_manager_relayout(mgr);
 }
@@ -2771,6 +3466,29 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
     // is pointless, and the respring relay must never call exitAndRelaunch:
     // from inside a random app.
     %init(SpringBoard);
+
+    // Prefer the class methods that take isWake, and only fall back to the
+    // instance getter plus a remembered flag where they do not exist.
+    Class wakeCtrl = objc_getClass("SBScreenWakeAnimationController");
+    if (wakeCtrl &&
+        [wakeCtrl respondsToSelector:@selector(backlightFadeDurationForSource:isWake:)] &&
+        [wakeCtrl respondsToSelector:@selector(_animationSpeedForBacklightChangeSource:isWake:)]) {
+        %init(WakeExact);
+#if SBT_WAKE_TRACE
+        sbt_trace_install_settings_hook();
+#endif
+    } else {
+        NSLog(@"[SBT:WAKE] isWake class methods missing, using the legacy flag");
+        %init(WakeLegacy);
+    }
+#if SBT_WAKE_TRACE
+    SBT_TRACE("trace build: %s path, noWakeAnim=%d noSleepFade=%d",
+              wakeCtrl && [wakeCtrl respondsToSelector:@selector(backlightFadeDurationForSource:isWake:)]
+                  ? "exact" : "legacy",
+              sbc_pref_bool_live(CFSTR("noWakeAnim")), sbc_pref_bool_live(CFSTR("noSleepFade")));
+    // After launch, so the class scan does not delay SpringBoard starting.
+    dispatch_async(dispatch_get_main_queue(), ^{ sbt_trace_install_view_hooks(); });
+#endif
     sbc_install_landscape_hooks();
     sbc_install_home_layout_hooks();
     sbc_install_add_widget_hooks();

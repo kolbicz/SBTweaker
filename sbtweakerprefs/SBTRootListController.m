@@ -26,6 +26,10 @@ static void sbc_seed_defaults(void) {
         migrations[@"dockExL"] = @"dockExH";
         migrations[@"dockExR"] = @"dockExH";
     }
+    if (stored && [stored integerValue] < 18) {
+        // Fast Sheets got its own duration; it used to share this one.
+        migrations[@"fastSheetsDuration"] = @"noSlideDuration";
+    }
     if (migrations.count) {
         for (NSString *newKey in migrations) {
             CFTypeRef newValue = CFPreferencesCopyAppValue((__bridge CFStringRef)newKey, kPrefsDomain);
@@ -123,8 +127,9 @@ static void sbc_post_notification(CFStringRef name) {
     return _specifiers;
 }
 
-// Posts the apply notification the tweak listens for inside SpringBoard.
-// Used by "Reset to Defaults"; regular changes take effect after a respring.
+// Posts the apply notification the tweak listens for inside SpringBoard,
+// after every change and after "Reset to Defaults". Most switches apply
+// right away; the few that only take effect at launch say so in the pane.
 - (void)apply {
     sbc_post_notification(CFSTR("cz.kolbi.sbtweaker/apply"));
 }
@@ -139,6 +144,27 @@ static void sbc_post_notification(CFStringRef name) {
                              (__bridge CFPropertyListRef)@(CFAbsoluteTimeGetCurrent()), kPrefsDomain);
     CFPreferencesAppSynchronize(kPrefsDomain);
     sbc_post_notification(CFSTR("cz.kolbi.sbtweaker/respring"));
+}
+
+#ifndef SBT_VERSION
+#define SBT_VERSION "unknown"
+#endif
+
+- (NSString *)version:(PSSpecifier *)specifier {
+    return @SBT_VERSION;
+}
+
+- (void)openURLString:(NSString *)string {
+    NSURL *url = [NSURL URLWithString:string];
+    if (url) [[UIApplication sharedApplication] openURL:url options:@{} completionHandler:nil];
+}
+
+- (void)openTwitter {
+    [self openURLString:@"https://x.com/_kolbicz"];
+}
+
+- (void)openGitHub {
+    [self openURLString:@"https://github.com/kolbicz/SBTweaker"];
 }
 
 - (void)resetDefaults {

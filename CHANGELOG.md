@@ -1,5 +1,32 @@
 # Changelog
 
+## 1.4.0
+
+- Switching off Dock count, Dock or Home Screen spacing, or Icon Scale now
+  takes effect right away instead of after a respring, as does the master
+  switch for these. The Home Screen grid on iOS 17 and later still needs a
+  respring, because SpringBoard builds its pages with the grid at launch.
+- Spacing is now added to your device's own margins, so with every extra at
+  0 the Home Screen and Dock look exactly stock on every iPhone and iPad.
+  If you had adjusted spacing before, check your values after updating:
+  icons may sit slightly differently than before.
+- Fast Sheets has its own duration, separate from Fast Page Transitions.
+  Your current duration is carried over to both.
+- Fast Page Transitions and Fast Sheets now also speed up animations that
+  used the system's default length, which used to keep their stock speed.
+- Setting Drag Coefficient back to 1.0, or switching it off, restores stock
+  animation speed right away instead of after a respring.
+- Switching off Double Tap to Lock now takes effect immediately.
+- Disable Wake Animation is reliable now: the screen no longer sometimes
+  fades in anyway.
+- Icon Layout Backup no longer restores an outdated layout after a respring
+  if the backup could not be updated, and skips restoring when nothing
+  changed. Saving the backup no longer slows down SpringBoard.
+- Number fields in Settings accept a decimal comma (1,5) and no longer save
+  the minimum when left empty.
+- Smaller performance improvements for Home Screen layout, animations inside
+  apps and the page indicator.
+
 ## 1.3.10
 
 - Fixed apps crashing with Fast Page Transitions, Fast Sheets or Fast Copy
