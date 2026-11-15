@@ -5,6 +5,13 @@ bundle. It supports rootless and roothide jailbreaks on iOS 15 and newer.
 These are in-process Substrate-hook reimplementations of my
 [DarkSword Tweaks](https://github.com/kolbicz/DarkSword-Tweaks/).
 
+## Install
+
+Add the repo `https://kolbicz.github.io/repo/` in Sileo or Zebra and install
+SBTweaker from there to get updates automatically, or download the `rootless`
+or `roothide` package from the
+[Releases page](https://github.com/kolbicz/SBTweaker/releases/latest).
+
 ## Features
 
 - **Dock**: configurable icon count (1–8), including live capacity updates
