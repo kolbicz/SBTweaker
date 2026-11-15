@@ -3,8 +3,8 @@ Name: SBTweaker
 Version: 1.4.0
 Architecture: iphoneos-arm
 Description: Opt-in SpringBoard customizations for rootless and roothide jailbreaks on iOS 15 and newer: dock and Home Screen layouts, icon backup, App Library, double-tap to lock, animations, navigation slide removal in apps, and fast copy.
-Maintainer: Kolbicz
-Author: Kolbicz
+Maintainer: Christoph Kolbicz
+Author: Christoph Kolbicz
 Section: Tweaks
 Depends: mobilesubstrate, preferenceloader
 Conflicts: com.christoph.sbcustomizer, com.christoph.doubletaplock, com.christoph.noapplibrary, cz.kolbi.noslide
