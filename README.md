@@ -36,9 +36,11 @@ or `roothide` package from the
 - **Page & Search Indicator**: opt-in portrait and landscape X/Y offsets for the
   Home Screen page dots or Search indicator
 - **Double Tap to Lock**: separate switches for Home Screen and Lock Screen
-  (ignores icons, folders and dock, and is disabled while passcode UI is shown)
+  (ignores icons, folders and dock, and is disabled while passcode UI is shown);
+  both apply without a respring
 - **Icon Layout Backup**: opt-in automatic backup on native icon-state changes
-  and guarded restore of Home Screen, folders and Dock after rejailbreaking
+  and guarded restore of Home Screen, folders and Dock after rejailbreaking,
+  plus a separate manual backup with Back Up Layout Now and Restore Backup
 - **Animations**:
   - Drag Coefficient slider (UIAnimationDragCoefficient, 0.01–2.00,
     default 1.0; 1.0 = stock, and switching back restores stock speed live)
@@ -51,6 +53,8 @@ or `roothide` package from the
   when an app opens a new page or goes back, including app-provided
   transitions, and sheets and pop-ups sliding up and closing; swipe gestures are
   unchanged and changes apply without a respring
+- **Excluded Apps**: SBTweaker installs no hooks in the apps listed there, so
+  Fast Copy, Fast Page Transitions and Fast Sheets stay off in them
 
 All settings live in Settings → SBTweaker. Every feature is opt-in and off by
 default; enabling the master switch alone changes nothing. Layout controls

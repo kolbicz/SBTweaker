@@ -50,6 +50,7 @@ static inline NSDictionary *SBTDefaultValues(void) {
             @"noSlideDuration": @0.01,
             @"fastSheets": @NO,
             @"fastSheetsDuration": @0.01,
+            @"excludedApps": @[],
             @"dismissSpotlightAfterResult": @NO,
             @"lockScreenDurationEnabled": @NO,
             @"lockScreenDuration": @30.0,

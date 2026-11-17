@@ -1,5 +1,29 @@
 # Changelog
 
+## 1.5.0
+
+- Excluded Apps: a new list under Inside Apps in the settings. SBTweaker
+  does nothing inside the apps switched on there: Fast Copy, Fast Page
+  Transitions and Fast Sheets stay off in them. Switching an app on applies
+  right away; after switching one off, reopen that app.
+- Manual icon layout backup: Back Up Layout Now saves the Home Screen,
+  folders and Dock, and Restore Backup brings that layout back at any time.
+  It is kept separately from the automatic backup and works whether or not
+  that is switched on.
+- Switching Double Tap to Lock on now takes effect immediately, like
+  switching it off.
+- Switching Icon Layout Backup off and on again no longer restores the
+  layout from before it was switched off. Layout changes made right after a
+  respring are no longer lost when there was nothing to restore.
+- When a sheet opens during a page transition, Fast Page Transitions and
+  Fast Sheets are now both fast; one of them used to play at stock speed.
+- The custom Dock count is no longer applied to other single-row layouts
+  once the Dock has been found.
+- Reset to Defaults asks for confirmation first.
+- Smaller performance improvements: settings are no longer re-read every
+  ten seconds, Fast Copy does less work for each animation inside apps, and
+  less is written to the system log.
+
 ## 1.4.0
 
 - Switching off Dock count, Dock or Home Screen spacing, or Icon Scale now

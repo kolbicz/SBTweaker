@@ -8,6 +8,7 @@
 #import <stdbool.h>
 #import <math.h>
 #import <notify.h>
+#import <pthread.h>
 #import <QuartzCore/QuartzCore.h>
 #import "SBTDefaults.h"
 #ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
@@ -113,6 +114,7 @@ typedef struct {
 #define kPrefsDomain SBTPreferencesDomain
 static CFStringRef const kApplyNotification = CFSTR("cz.kolbi.sbtweaker/apply");
 static BOOL sbc_pref_bool_live(CFStringRef key);
+static NSDictionary *sbc_prefs(void);
 
 // Wake/sleep tracing for test builds (make SBT_TRACE=1). Times are
 // CACurrentMediaTime() in seconds, so lines from one wake line up.
@@ -240,15 +242,26 @@ static void force_manager_relayout(id mgr) {
 
 // ------------------------------------------------------ icon layout backup
 
-static NSString *sbt_icon_layout_backup_path(void) {
+static NSString *sbt_icon_layout_file(NSString *name) {
+    NSString *path = [@"/var/mobile/Library/Preferences" stringByAppendingPathComponent:name];
 #ifdef THEOS_PACKAGE_SCHEME_ROOTHIDE
     // Keep the snapshot inside roothide's randomized jailbreak root. Writing
     // the literal rootfs path leaks the file into the shared mobile container,
     // where sandboxed and non-roothide applications can see it.
-    return jbroot(@"/var/mobile/Library/Preferences/cz.kolbi.sbtweaker.iconlayout.plist");
+    return jbroot(path);
 #else
-    return @"/var/mobile/Library/Preferences/cz.kolbi.sbtweaker.iconlayout.plist";
+    return path;
 #endif
+}
+
+// The automatic snapshot, which follows every layout change.
+static NSString *sbt_icon_layout_backup_path(void) {
+    return sbt_icon_layout_file(@"cz.kolbi.sbtweaker.iconlayout.plist");
+}
+
+// The manual backup, which only changes on "Back Up Layout Now".
+static NSString *sbt_manual_icon_backup_path(void) {
+    return sbt_icon_layout_file(@"cz.kolbi.sbtweaker.iconlayout.manual.plist");
 }
 
 static BOOL sbt_icon_restore_guard = NO;
@@ -259,12 +272,17 @@ static BOOL sbt_icon_restore_guard = NO;
 // The state is serialized right away, since SpringBoard may go on mutating
 // it, but written on a serial background queue so a save never waits on the
 // disk. Order is kept, so the newest save always lands last.
-static void sbt_write_icon_layout_snapshot(id state) {
+static dispatch_queue_t sbt_icon_backup_queue(void) {
     static dispatch_queue_t queue;
     static dispatch_once_t once;
     dispatch_once(&once, ^{
         queue = dispatch_queue_create("cz.kolbi.sbtweaker.iconbackup", DISPATCH_QUEUE_SERIAL);
     });
+    return queue;
+}
+
+static void sbt_write_icon_layout_snapshot(id state) {
+    dispatch_queue_t queue = sbt_icon_backup_queue();
     NSData *data = [NSPropertyListSerialization propertyList:state
                                             isValidForFormat:NSPropertyListBinaryFormat_v1_0]
         ? [NSPropertyListSerialization dataWithPropertyList:state
@@ -279,9 +297,37 @@ static void sbt_write_icon_layout_snapshot(id state) {
     });
 }
 
-static BOOL sbt_restore_icon_layout(void) {
-    if (!sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"))) return NO;
-    NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:sbt_icon_layout_backup_path()];
+// The snapshot only follows the layout while the backup is on. One left over
+// from before it was switched off would be restored over every change made
+// since, so switching off removes it, and switching on (or finding none)
+// starts from the layout SpringBoard has saved now.
+//
+// It is only removed after a change in the Settings pane: at launch a
+// preferences read can still come back empty, and that must not cost the
+// snapshot a rejailbreak is about to need.
+static void sbt_sync_icon_layout_snapshot(BOOL settingsChanged) {
+    NSString *path = sbt_icon_layout_backup_path();
+    if (!sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"))) {
+        if (!settingsChanged || !sbc_prefs().count) return;
+        dispatch_async(sbt_icon_backup_queue(), ^{
+            if ([[NSFileManager defaultManager] removeItemAtPath:path error:NULL])
+                NSLog(@"[SBT:ICONS] backup switched off, snapshot removed");
+        });
+        return;
+    }
+    id store = [%c(SBDefaultIconModelStore) sharedInstance];
+    NSURL *url = [store respondsToSelector:@selector(currentIconStateURL)]
+        ? [store currentIconStateURL] : nil;
+    if (!url.path.length) return;
+    dispatch_async(sbt_icon_backup_queue(), ^{
+        if ([[NSFileManager defaultManager] fileExistsAtPath:path]) return;
+        NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:url.path];
+        if (state.count && [state writeToFile:path atomically:YES])
+            NSLog(@"[SBT:ICONS] snapshot started from the saved layout");
+    });
+}
+
+static BOOL sbt_restore_icon_layout_state(NSDictionary *state) {
     if (!state.count) return NO;
 
     id controller = [%c(SBIconController) sharedInstance];
@@ -309,6 +355,37 @@ static BOOL sbt_restore_icon_layout(void) {
     }
     NSLog(@"[SBT:ICONS] layout restore %@", restored ? @"requested" : @"failed");
     return restored;
+}
+
+static BOOL sbt_restore_icon_layout(void) {
+    if (!sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled"))) return NO;
+    return sbt_restore_icon_layout_state(
+        [NSDictionary dictionaryWithContentsOfFile:sbt_icon_layout_backup_path()]);
+}
+
+// "Back Up Layout Now" and "Restore Backup" in the Settings pane. They work
+// whether or not the automatic backup is on, on a file of their own.
+static void sbt_manual_icon_backup(void) {
+    id store = [%c(SBDefaultIconModelStore) sharedInstance];
+    NSURL *url = [store respondsToSelector:@selector(currentIconStateURL)]
+        ? [store currentIconStateURL] : nil;
+    NSDictionary *state = url.path.length ? [NSDictionary dictionaryWithContentsOfFile:url.path] : nil;
+    BOOL saved = state.count && [state writeToFile:sbt_manual_icon_backup_path() atomically:YES];
+    NSLog(@"[SBT:ICONS] manual backup %@", saved ? @"saved" : @"failed");
+    if (!saved) return;
+    // The pane shows when the backup was made.
+    CFPreferencesSetAppValue(CFSTR("iconLayoutManualBackupDate"),
+                             (__bridge CFPropertyListRef)[NSDate date], kPrefsDomain);
+    CFPreferencesAppSynchronize(kPrefsDomain);
+}
+
+static void sbt_manual_icon_restore(void) {
+    NSDictionary *state = [NSDictionary dictionaryWithContentsOfFile:sbt_manual_icon_backup_path()];
+    if (!state.count) { NSLog(@"[SBT:ICONS] no manual backup to restore"); return; }
+    if (!sbt_restore_icon_layout_state(state)) return;
+    // Otherwise the next launch would put the automatic snapshot back over it.
+    if (sbc_pref_bool_live(CFSTR("iconLayoutBackupEnabled")))
+        sbt_write_icon_layout_snapshot(state);
 }
 
 %group SpringBoard
@@ -454,11 +531,9 @@ static BOOL sbc_restore_native(id obj, NSString *key) {
 
 // ---------------------------------------------------------------- grid patches
 
-static void disable_list_autofit(id listView, NSString *tag) {
-    if ([listView respondsToSelector:@selector(setAutomaticallyAdjustsLayoutMetricsToFit:)]) {
+static void disable_list_autofit(id listView) {
+    if ([listView respondsToSelector:@selector(setAutomaticallyAdjustsLayoutMetricsToFit:)])
         sbc_write_autofit(listView, NO);
-        NSLog(@"[SBC] %@ autoFit=NO", tag);
-    }
 }
 
 static NSArray *sbc_root_list_views(id mgr) {
@@ -477,7 +552,7 @@ static NSArray *sbc_root_list_views(id mgr) {
 
 static void patch_dock(id dock, int dockIcons) {
     if (!dock) { NSLog(@"[SBC] dock: nil dockListView"); return; }
-    disable_list_autofit(dock, @"dockListView");
+    disable_list_autofit(dock);
 
     id model = list_view_model(dock);
     if (model && [model respondsToSelector:@selector(gridSize)] &&
@@ -515,8 +590,7 @@ static void patch_homescreen_grid(id mgr, id cfg, int cols, int rows) {
     NSArray *lists = sbc_root_list_views(mgr);
     for (NSUInteger i = 0; i < lists.count; i++) {
         id listView = lists[i];
-        NSString *tag = [NSString stringWithFormat:@"page[%lu]", (unsigned long)i];
-        disable_list_autofit(listView, tag);
+        disable_list_autofit(listView);
         // Never rewrite a Home Screen model's grid. On iOS 15 this can
         // invalidate and remove widgets during icon-state restoration.
         // Configuration and SBIconListView metric hooks provide the
@@ -759,12 +833,19 @@ static NSDictionary *sbc_reload_prefs(void) {
 }
 
 static NSDictionary *sbc_prefs(void) {
+    // The cache belongs to the main thread, where the hooks run. A caller on
+    // any other thread reads for itself rather than share it unlocked.
+    if (!pthread_main_np())
+        return CFBridgingRelease(CFPreferencesCopyMultiple(NULL, kPrefsDomain,
+                                                           kCFPreferencesCurrentUser,
+                                                           kCFPreferencesAnyHost));
     // Hot hooks must not make a cfprefsd round-trip on every call. The
     // Settings pane posts the apply notification after every change, and
-    // sbc_apply() reloads right away, so the cache only needs refreshing for
-    // writes that did not come through the pane, or a read so early in boot
-    // that cfprefsd had nothing yet. Ten seconds covers those.
-    if (!sbc_cachedPrefs || CFAbsoluteTimeGetCurrent() - sbc_prefs_loaded_at >= 10.0)
+    // sbc_apply() reloads right away and at launch, so a loaded cache stays.
+    // Only an empty one is read again, every ten seconds at most: a read so
+    // early in boot that cfprefsd had nothing yet.
+    if (!sbc_cachedPrefs ||
+        (!sbc_cachedPrefs.count && CFAbsoluteTimeGetCurrent() - sbc_prefs_loaded_at >= 10.0))
         sbc_reload_prefs();
     return sbc_cachedPrefs;
 }
@@ -807,9 +888,26 @@ static void sbc_register_root_config(id cfg) {
     sbc_root_cfg = cfg;
 }
 
-static void sbc_set_dock_config(id cfg) {
+// The dock configuration and its copies, by identity.
+static NSHashTable *sbc_dock_configs(void) {
+    static NSHashTable *set = nil;
+    static dispatch_once_t onceToken;
+    dispatch_once(&onceToken, ^{
+        set = [NSHashTable hashTableWithOptions:NSPointerFunctionsWeakMemory |
+                                                NSPointerFunctionsObjectPointerPersonality];
+    });
+    return set;
+}
+
+static void sbc_register_dock_config(id cfg) {
     if (!cfg) return;
     [sbc_other_configs() removeObject:cfg];
+    [sbc_dock_configs() addObject:cfg];
+}
+
+static void sbc_set_dock_config(id cfg) {
+    if (!cfg) return;
+    sbc_register_dock_config(cfg);
     sbc_dock_cfg = cfg;
 }
 
@@ -822,6 +920,7 @@ static int sbc_config_kind(id cfg) {
     if (sbc_root_cfg && cfg == sbc_root_cfg) return SBC_CFG_ROOT;
     if ([sbc_root_configs() containsObject:cfg]) return SBC_CFG_ROOT;
     if (sbc_dock_cfg && cfg == sbc_dock_cfg) return SBC_CFG_DOCK;
+    if ([sbc_dock_configs() containsObject:cfg]) return SBC_CFG_DOCK;
     if ([sbc_other_configs() containsObject:cfg]) return SBC_CFG_UNKNOWN;
 
     // Refresh identities from the live layout provider.
@@ -849,6 +948,8 @@ static int sbc_config_kind(id cfg) {
     id copy = %orig;
     if ([sbc_root_configs() containsObject:self])
         sbc_register_root_config(copy);
+    else if ([sbc_dock_configs() containsObject:self])
+        sbc_register_dock_config(copy);
     SBIconImageInfo native;
     if (copy && sbc_get_native_icon_info(self, &native))
         sbc_set_native_icon_info(copy, native);
@@ -898,7 +999,8 @@ static int sbc_config_kind(id cfg) {
     // The dock-count switch owns both its geometry and capacity. This
     // fallback keeps the configured slot count available during boot-time
     // icon-state validation before object identity has been established.
-    if (kind == SBC_CFG_UNKNOWN && prefBool(p, @"dockLayoutEnabled") &&
+    // Once the dock is known (its copies included), nothing else is guessed.
+    if (kind == SBC_CFG_UNKNOWN && !sbc_dock_cfg && prefBool(p, @"dockLayoutEnabled") &&
         orig == 4 && [self numberOfPortraitRows] == 1) {
         static BOOL logged = NO;
         if (!logged) { logged = YES; NSLog(@"[SBC] dock config identified by 1-row fallback"); }
@@ -1691,6 +1793,11 @@ static void sbc_patch_dock_config(id dock) {
 %hook SBHIconManager
 - (id)listLayoutProvider {
     id provider = %orig;
+    // Asked many times per layout pass. While the same provider still has
+    // the configurations found last time, there is nothing new to look up.
+    static __weak id lastProvider = nil;
+    if (provider && provider == lastProvider && sbc_root_cfg && sbc_dock_cfg) return provider;
+    lastProvider = provider;
     id layout = [provider respondsToSelector:@selector(layoutForIconLocation:)]
                 ? [provider layoutForIconLocation:@"SBIconLocationRoot"] : nil;
     id cfg = [layout respondsToSelector:@selector(layoutConfiguration)] ? [layout layoutConfiguration] : nil;
@@ -1927,9 +2034,9 @@ static void sbc_poke_trailing(id obj) {
 //     main page content is a centered column, so edge taps never reached a
 //     recognizer attached there and double-tap only worked mid-screen.
 // Each area has its own switch (dtlHomeScreen / dtlLockScreen), read live.
-// Recognizers are installed when the views appear, so switching one on takes
-// a respring; switching it off applies at once, because the delegate then
-// refuses to let the gesture begin.
+// The recognizers are always installed when the views appear and their
+// delegates turn every touch away while the switch is off, so switching a
+// gesture on or off applies at once.
 
 @interface CSCoverSheetViewController : UIViewController
 @end
@@ -1978,6 +2085,7 @@ static BOOL sbt_view_contains_visible_passcode_ui(UIView *view) {
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
+    if (!sbc_pref_bool_live(CFSTR("dtlLockScreen"))) return NO;
     UIView *root = gestureRecognizer.view;
     for (UIView *view = touch.view; view && view != root; view = view.superview) {
         if ([view isKindOfClass:[UIControl class]]) return NO;
@@ -1998,6 +2106,7 @@ static BOOL sbt_view_contains_visible_passcode_ui(UIView *view) {
 
 - (BOOL)gestureRecognizer:(UIGestureRecognizer *)gestureRecognizer
        shouldReceiveTouch:(UITouch *)touch {
+    if (!sbc_pref_bool_live(CFSTR("dtlHomeScreen"))) return NO;
     Class iconViewClass = %c(SBIconView);
     Class dockViewClass = %c(SBDockIconListView);
     UIView *root = gestureRecognizer.view;
@@ -2042,7 +2151,6 @@ static void sbt_root_did_move_to_window(id self, SEL _cmd) {
     // Apply once when the real root view enters a window; persistent getter
     // hooks handle subsequent App Library queries without timer retries.
     if (sbc_hide_app_library()) sbc_poke_trailing(self);
-    if (!sbc_pref_bool_live(CFSTR("dtlHomeScreen"))) return;
     if (objc_getAssociatedObject(self, &kDTHomeGestureKey)) return;
 
     UITapGestureRecognizer *recognizer = dtl_makeRecognizer();
@@ -2070,7 +2178,6 @@ static void sbt_install_home_double_tap_hook(void) {
     // SpringBoard (attaching a lock recognizer to each view — a likely
     // watchdog/hang source). Only proceed for actual cover sheet instances.
     if (![self isKindOfClass:%c(CSCoverSheetViewController)]) return;
-    if (!sbc_pref_bool_live(CFSTR("dtlLockScreen"))) return;
     UIView *v = self.view;
     if (!v) return;
     if (objc_getAssociatedObject(v, &kDTLockGestureKey)) return;
@@ -2658,18 +2765,86 @@ static uint64_t sbt_app_state(void) {
 // Same value, cached so the hooks never make a notify round-trip. Refreshed on
 // the main queue whenever SpringBoard republishes (and at once in SpringBoard
 // itself, which publishes it).
+//
+// An app on the Excluded Apps list reads everything as off.
 static uint64_t sbt_cached_app_state = 0;
+static BOOL sbt_app_excluded = NO;
+
+static void sbt_refresh_app_state(void) {
+    sbt_cached_app_state = sbt_app_excluded ? 0 : sbt_app_state();
+}
 
 static void sbt_watch_app_state(void) {
-    sbt_cached_app_state = sbt_app_state();
+    sbt_refresh_app_state();
     int watchToken;
     notify_register_dispatch(kSBTAppStateName, &watchToken, dispatch_get_main_queue(), ^(int t) {
-        sbt_cached_app_state = sbt_app_state();
+        sbt_refresh_app_state();
     });
+}
+
+// Apps SBTweaker leaves alone. The list does not fit into the shared state,
+// so each excluded app has a notification of its own whose state is 1; an app
+// only ever looks at the one named after it.
+//
+// An app that is on the list when it starts gets no hooks at all (see %ctor),
+// so taking it off the list shows once it is opened again. Putting a running
+// app on the list switches everything off in it right away.
+
+static const char *sbt_excluded_name(NSString *bundleID) {
+    return [@"cz.kolbi.sbtweaker/excluded/" stringByAppendingString:bundleID].UTF8String;
+}
+
+// App side. An extension follows the app it belongs to.
+static void sbt_watch_excluded(void) {
+    NSBundle *bundle = [NSBundle mainBundle];
+    NSString *bundleID = bundle.bundleIdentifier;
+    if ([bundle.bundlePath.pathExtension isEqualToString:@"appex"]) {
+        NSString *appPath = [[bundle.bundlePath stringByDeletingLastPathComponent]
+                             stringByDeletingLastPathComponent];
+        bundleID = [NSBundle bundleWithPath:appPath].bundleIdentifier ?: bundleID;
+    }
+    if (!bundleID.length) return;
+    int token;
+    if (notify_register_dispatch(sbt_excluded_name(bundleID), &token, dispatch_get_main_queue(), ^(int t) {
+            uint64_t state = 0;
+            sbt_app_excluded = notify_get_state(t, &state) == NOTIFY_STATUS_OK && state != 0;
+            sbt_refresh_app_state();
+        }) != NOTIFY_STATUS_OK) return;
+    uint64_t state = 0;
+    sbt_app_excluded = notify_get_state(token, &state) == NOTIFY_STATUS_OK && state != 0;
+}
+
+// SpringBoard only. A state lives as long as someone is registered for its
+// name, so the tokens of excluded apps are kept until they leave the list.
+static void sbt_publish_excluded_apps(void) {
+    static NSMutableDictionary<NSString *, NSNumber *> *tokens;
+    if (!tokens) tokens = [NSMutableDictionary dictionary];
+    NSMutableSet<NSString *> *excluded = [NSMutableSet set];
+    id list = sbc_prefs()[@"excludedApps"];
+    if ([list isKindOfClass:[NSArray class]])
+        for (id entry in list)
+            if ([entry isKindOfClass:[NSString class]] && [entry length]) [excluded addObject:entry];
+    for (NSString *bundleID in excluded) {
+        if (tokens[bundleID]) continue;
+        int token;
+        if (notify_register_check(sbt_excluded_name(bundleID), &token) != NOTIFY_STATUS_OK) continue;
+        notify_set_state(token, 1);
+        notify_post(sbt_excluded_name(bundleID));
+        tokens[bundleID] = @(token);
+    }
+    for (NSString *bundleID in tokens.allKeys) {
+        if ([excluded containsObject:bundleID]) continue;
+        int token = tokens[bundleID].intValue;
+        notify_set_state(token, 0);
+        notify_post(sbt_excluded_name(bundleID));
+        notify_cancel(token);
+        [tokens removeObjectForKey:bundleID];
+    }
 }
 
 // SpringBoard only.
 static void sbt_publish_app_state(void) {
+    sbt_publish_excluded_apps();
     int token = sbt_app_state_token();
     if (token == NOTIFY_TOKEN_INVALID) return;
     uint64_t state = 0;
@@ -2736,9 +2911,19 @@ static double ns_targetDuration(void) {
     return ns_durationFor(SBT_APP_PAGE_TRANSITIONS);
 }
 
+// A page transition and a sheet can overlap, so every open window is kept
+// with its duration: clamping lasts until the last one closes, at the
+// duration of the newest still open.
 static BOOL ns_clamping = NO;
 static double ns_clampDuration = 0;
 static NSUInteger ns_clampToken = 0;
+static NSMutableDictionary<NSNumber *, NSNumber *> *ns_clampWindows;
+
+static void ns_updateClamp(void) {
+    NSNumber *newest = [ns_clampWindows.allKeys valueForKeyPath:@"@max.self"];
+    ns_clamping = newest != nil;
+    if (newest) ns_clampDuration = ns_clampWindows[newest].doubleValue;
+}
 
 static BOOL ns_clampable(CAAnimation *anim) {
     // Only plain finite timing animations (and groups of them). Anything
@@ -2809,11 +2994,13 @@ static const CFTimeInterval kSBTMenuDuration = 0.01;
     // animation itself, so no caller can depend on this object's identity.
     // The @try is belt and braces: this runs in every app, and a throw here
     // kills that app rather than just losing the optimisation.
-    if (anim && [NSThread isMainThread]) {
+    // With nothing switched on this is two reads; the walk up to the edit
+    // menu is only made for an animation that could be changed at all.
+    if (anim && (ns_clamping || (sbt_cached_app_state & SBT_APP_FAST_COPY)) && [NSThread isMainThread]) {
         CFTimeInterval target = 0;
         if (ns_clamping)
             target = ns_clampDuration;
-        else if ((sbt_cached_app_state & SBT_APP_FAST_COPY) && sbt_layer_in_edit_menu(self))
+        else if (ns_clampable(anim) && sbt_layer_in_edit_menu(self))
             target = kSBTMenuDuration;
         if (target > 0 && ns_clampable(anim)) {
             @try {
@@ -2837,14 +3024,25 @@ static const CFTimeInterval kSBTMenuDuration = 0.01;
 
 %group NoSlide
 
+// Main thread only, like the layer hook that reads the state; 0 opens nothing.
 static NSUInteger ns_startClamp(double duration) {
-    ns_clamping = YES;
-    ns_clampDuration = duration;
-    return ++ns_clampToken;
+    if (![NSThread isMainThread]) return 0;
+    if (!ns_clampWindows) ns_clampWindows = [NSMutableDictionary dictionary];
+    NSUInteger token = ++ns_clampToken;
+    ns_clampWindows[@(token)] = @(duration);
+    ns_updateClamp();
+    return token;
 }
 
 static void ns_endClamp(NSUInteger token) {
-    if (ns_clampToken == token) ns_clamping = NO;
+    if (!token || !ns_clampWindows[@(token)]) return;
+    [ns_clampWindows removeObjectForKey:@(token)];
+    ns_updateClamp();
+}
+
+static void ns_cancelClamps(void) {
+    [ns_clampWindows removeAllObjects];
+    ns_updateClamp();
 }
 
 // Called when a transition's animator actually runs. A swipe-back is
@@ -2854,7 +3052,7 @@ static void ns_endClamp(NSUInteger token) {
 // which covers the whole synchronous transition setup.
 static void ns_beginClamp(id<UIViewControllerContextTransitioning> ctx) {
     if (!ctx) return;
-    if ([ctx isInteractive]) { ns_clamping = NO; ns_clampToken++; return; }
+    if ([ctx isInteractive]) { ns_cancelClamps(); return; }
     if (ns_clamping) return;
     double d = ns_targetDuration();
     if (d <= 0) return;
@@ -3250,8 +3448,9 @@ static void restore_dock_scale(id dock, id dockCfg) {
     NSLog(@"[SBC:SCALE] dock scale restored");
 }
 
-static void sbc_apply(void) {
+static void sbc_apply(BOOL settingsChanged) {
     NSDictionary *p = sbc_reload_prefs(); // refresh the cache used by the configuration getter hooks
+    sbt_sync_icon_layout_snapshot(settingsChanged);
     // A feature that is off, or everything with the master switch off, gets
     // SpringBoard's own values back, so switching off needs no respring.
     BOOL on = prefBool(p, @"enabled");
@@ -3331,7 +3530,7 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
     // Give cfprefsd a moment to flush the plist written by the settings pane.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.3 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        sbc_apply();
+        sbc_apply(YES);
         sbt_publish_app_state();
     });
 }
@@ -3343,13 +3542,18 @@ static void sbc_apply_notification(CFNotificationCenterRef center, void *observe
     // SBIconController and its manager are available after SpringBoard's
     // original launch method returns. Apply before the first rendered frame
     // instead of visibly correcting the layout three seconds later.
-    sbc_apply(); // includes the drag coefficient
+    sbc_apply(NO); // includes the drag coefficient
     sbt_publish_app_state();
     // Restore before autosave gets any chance to replace the preserved
     // snapshot with SpringBoard's post-rejailbreak fallback arrangement.
     dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.8 * NSEC_PER_SEC)),
                    dispatch_get_main_queue(), ^{
-        if (sbt_icon_restore_guard) sbt_restore_icon_layout();
+        // Saves are held back until the snapshot is in place. With nothing
+        // restored there is nothing to protect, so they go through again.
+        if (!sbt_icon_restore_guard || !sbt_restore_icon_layout()) {
+            sbt_icon_restore_guard = NO;
+            return;
+        }
         dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(1.0 * NSEC_PER_SEC)),
                        dispatch_get_main_queue(), ^{
             sbt_icon_restore_guard = NO;
@@ -3392,6 +3596,29 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
     });
 }
 
+// Like the respring relay: the notification only counts together with a
+// fresh request in the preferences domain, which sandboxed apps cannot write.
+static void sbt_icon_layout_notification(CFNotificationCenterRef center, void *observer,
+                                         CFStringRef name, const void *object, CFDictionaryRef userInfo) {
+    dispatch_async(dispatch_get_main_queue(), ^{
+        CFPreferencesAppSynchronize(kPrefsDomain);
+        NSDictionary *request = CFBridgingRelease(CFPreferencesCopyAppValue(
+            CFSTR("iconLayoutRequest"), kPrefsDomain));
+        if (![request isKindOfClass:[NSDictionary class]]) return;
+        CFPreferencesSetAppValue(CFSTR("iconLayoutRequest"), NULL, kPrefsDomain);
+        CFPreferencesAppSynchronize(kPrefsDomain);
+        NSNumber *requested = request[@"time"];
+        NSString *action = request[@"action"];
+        if (![requested isKindOfClass:[NSNumber class]] || ![action isKindOfClass:[NSString class]] ||
+            fabs(CFAbsoluteTimeGetCurrent() - requested.doubleValue) > 10.0) {
+            NSLog(@"[SBT:ICONS] ignoring stale layout request");
+            return;
+        }
+        if ([action isEqualToString:@"backup"]) sbt_manual_icon_backup();
+        else if ([action isEqualToString:@"restore"]) sbt_manual_icon_restore();
+    });
+}
+
 %ctor {
     // The filter injects into every UIKit process. Daemons without a bundle
     // need none of this; apps and app extensions (share sheet, widgets,
@@ -3402,7 +3629,11 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
 
     // Hooks that act inside apps; their switches come from the app state
     // SpringBoard publishes. The Spotlight hooks only find their class in the
-    // Spotlight UI process.
+    // Spotlight UI process. An excluded app gets none of them.
+    if (!sbt_is_springboard) {
+        sbt_watch_excluded();
+        if (sbt_app_excluded) return;
+    }
     sbt_watch_app_state();
     %init(FastCopy);
     %init(Layer);
@@ -3442,6 +3673,10 @@ static void sbc_respring_notification(CFNotificationCenterRef center, void *obse
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL, sbc_apply_notification,
                                     kApplyNotification, NULL,
+                                    CFNotificationSuspensionBehaviorDeliverImmediately);
+    CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
+                                    NULL, sbt_icon_layout_notification,
+                                    CFSTR("cz.kolbi.sbtweaker/iconLayout"), NULL,
                                     CFNotificationSuspensionBehaviorDeliverImmediately);
     CFNotificationCenterAddObserver(CFNotificationCenterGetDarwinNotifyCenter(),
                                     NULL, sbc_respring_notification,

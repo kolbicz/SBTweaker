@@ -167,7 +167,68 @@ static void sbc_post_notification(CFStringRef name) {
     [self openURLString:@"https://github.com/kolbicz/SBTweaker"];
 }
 
+// The Settings app cannot reach SpringBoard's icon state, so the tweak does
+// the work. As with the respring, it only acts on a fresh request written to
+// the preferences domain.
+- (void)requestIconLayoutAction:(NSString *)action {
+    NSDictionary *request = @{@"action": action, @"time": @(CFAbsoluteTimeGetCurrent())};
+    CFPreferencesSetAppValue(CFSTR("iconLayoutRequest"), (__bridge CFPropertyListRef)request, kPrefsDomain);
+    CFPreferencesAppSynchronize(kPrefsDomain);
+    sbc_post_notification(CFSTR("cz.kolbi.sbtweaker/iconLayout"));
+}
+
+- (NSDate *)iconBackupDate {
+    CFPreferencesAppSynchronize(kPrefsDomain);
+    id date = CFBridgingRelease(CFPreferencesCopyAppValue(CFSTR("iconLayoutManualBackupDate"), kPrefsDomain));
+    return [date isKindOfClass:[NSDate class]] ? date : nil;
+}
+
+- (NSString *)lastIconBackup:(PSSpecifier *)specifier {
+    NSDate *date = [self iconBackupDate];
+    if (!date) return @"Never";
+    return [NSDateFormatter localizedStringFromDate:date
+                                          dateStyle:NSDateFormatterMediumStyle
+                                          timeStyle:NSDateFormatterShortStyle];
+}
+
+- (void)backUpIconLayout {
+    [self requestIconLayoutAction:@"backup"];
+    // The tweak records the time once the backup is written.
+    dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(0.7 * NSEC_PER_SEC)),
+                   dispatch_get_main_queue(), ^{
+        [self reloadSpecifierID:@"lastIconBackup" animated:NO];
+    });
+}
+
+- (void)restoreIconLayout {
+    BOOL exists = [self iconBackupDate] != nil;
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:exists ? @"Restore Backup?" : @"No Backup Yet"
+                         message:exists ? @"Your current Home Screen and Dock layout is replaced by the backup."
+                                        : @"Tap Back Up Layout Now first."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:exists ? @"Cancel" : @"OK"
+                                              style:UIAlertActionStyleCancel handler:nil]];
+    if (exists)
+        [alert addAction:[UIAlertAction actionWithTitle:@"Restore" style:UIAlertActionStyleDestructive
+                                                handler:^(UIAlertAction *action) {
+            [self requestIconLayoutAction:@"restore"];
+        }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
 - (void)resetDefaults {
+    UIAlertController *alert = [UIAlertController
+        alertControllerWithTitle:@"Reset to Defaults?"
+                         message:@"Every SBTweaker setting goes back to its default."
+                  preferredStyle:UIAlertControllerStyleAlert];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Cancel" style:UIAlertActionStyleCancel handler:nil]];
+    [alert addAction:[UIAlertAction actionWithTitle:@"Reset" style:UIAlertActionStyleDestructive
+                                            handler:^(UIAlertAction *action) { [self performReset]; }]];
+    [self presentViewController:alert animated:YES completion:nil];
+}
+
+- (void)performReset {
     NSDictionary *defs = sbc_default_values();
     for (NSString *key in defs) {
         CFPreferencesSetAppValue((__bridge CFStringRef)key,
