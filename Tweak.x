@@ -619,12 +619,22 @@ static UIEdgeInsets sbc_stored_insets(id cfg) {
     return stored;
 }
 
+// Negative extra spacing can eat into SpringBoard's own inset, but never past
+// the screen edge: a negative inset would push the grid off screen.
+static UIEdgeInsets sbc_nonnegative_insets(UIEdgeInsets insets) {
+    insets.top = MAX(0.0, insets.top);
+    insets.left = MAX(0.0, insets.left);
+    insets.bottom = MAX(0.0, insets.bottom);
+    insets.right = MAX(0.0, insets.right);
+    return insets;
+}
+
 static UIEdgeInsets sbc_home_insets(NSDictionary *p, UIEdgeInsets base) {
     base.top += prefDouble(p, @"homeExT");
     base.left += prefDouble(p, @"homeExL");
     base.bottom += prefDouble(p, @"homeExB");
     base.right += prefDouble(p, @"homeExR");
-    return base;
+    return sbc_nonnegative_insets(base);
 }
 
 static UIEdgeInsets sbc_dock_insets(NSDictionary *p, UIEdgeInsets base) {
@@ -1166,10 +1176,11 @@ static UIEdgeInsets sbc_landscape_insets(id self, SEL _cmd) {
         !prefBool(p, @"homeSpacingLandscapeEnabled") ||
         sbc_config_kind(self) != SBC_CFG_ROOT)
         return orig;
-    UIEdgeInsets insets = UIEdgeInsetsMake(orig.top + prefDouble(p, @"homeExTLandscape"),
-                                           orig.left + prefDouble(p, @"homeExLLandscape"),
-                                           orig.bottom + prefDouble(p, @"homeExBLandscape"),
-                                           orig.right + prefDouble(p, @"homeExRLandscape"));
+    UIEdgeInsets insets = sbc_nonnegative_insets(UIEdgeInsetsMake(
+        orig.top + prefDouble(p, @"homeExTLandscape"),
+        orig.left + prefDouble(p, @"homeExLLandscape"),
+        orig.bottom + prefDouble(p, @"homeExBLandscape"),
+        orig.right + prefDouble(p, @"homeExRLandscape")));
     // The grid and icon size actually in use, not settings that are off.
     int columns = [self respondsToSelector:@selector(numberOfLandscapeColumns)]
         ? (int)[self numberOfLandscapeColumns] : (int)prefInt(p, @"hsColsLandscape");

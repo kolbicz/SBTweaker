@@ -62,6 +62,14 @@ apply live, switching them off included (except the Home Screen grid on
 iOS 17 and later, which needs a respring), and a respring button is included
 for changes that need one.
 
+## Version 1.5.1
+
+- The Home Screen's Extra Top/Bottom fields accept down to -200 and Extra
+  Left/Right down to -160 (was -20 for all four), in both orientations. The
+  resulting portrait and landscape insets are clamped to 0 per edge
+  (`sbc_nonnegative_insets`), so a negative value can use up SpringBoard's
+  own inset but never moves the grid past the screen edge.
+
 ## Version 1.4.0
 
 - Layout values written into SpringBoard's objects (portrait columns/rows and

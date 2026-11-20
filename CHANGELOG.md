@@ -1,5 +1,12 @@
 # Changelog
 
+## 1.5.1
+
+- Extra Top and Extra Bottom spacing now go down to -200 and Extra Left and
+  Extra Right to -160 (previously -20), in portrait and landscape. That
+  makes room to move the icons much lower on the screen, for example. Icons
+  never go past the screen edge: spacing stops once it reaches the edge.
+
 ## 1.5.0
 
 - Excluded Apps: a new list under Inside Apps in the settings. SBTweaker
