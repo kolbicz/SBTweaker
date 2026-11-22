@@ -2740,6 +2740,7 @@ static BOOL sbt_is_springboard = NO;
 // pane, so app-side switches apply without a respring.
 //   bit 0        Fast Copy
 //   bit 1        Dismiss Spotlight after opening a result
+//   bit 2        Disable Parallax
 //   bit 3        Fast Page Transitions
 //   bit 4        Fast Sheets
 //   bits 16-31   Fast Page Transitions duration in ms
@@ -2748,6 +2749,7 @@ static BOOL sbt_is_springboard = NO;
 static const char *const kSBTAppStateName = "cz.kolbi.sbtweaker/appState";
 #define SBT_APP_FAST_COPY          (1ULL << 0)
 #define SBT_APP_DISMISS_SPOTLIGHT  (1ULL << 1)
+#define SBT_APP_NO_PARALLAX        (1ULL << 2)
 #define SBT_APP_PAGE_TRANSITIONS   (1ULL << 3)
 #define SBT_APP_SHEETS             (1ULL << 4)
 #define SBT_APP_SLIDE_SHIFT        16
@@ -2781,12 +2783,48 @@ static uint64_t sbt_app_state(void) {
 static uint64_t sbt_cached_app_state = 0;
 static BOOL sbt_app_excluded = NO;
 
-static void sbt_refresh_app_state(void) {
-    sbt_cached_app_state = sbt_app_excluded ? 0 : sbt_app_state();
+@interface UIView (SBTParallax)
++ (void)_beginSuspendingMotionEffectsForReason:(NSString *)reason;
++ (void)_endSuspendingMotionEffectsForReason:(NSString *)reason;
++ (void)_recenterMotionEffects;
+@end
+
+// Disable Parallax: suspends UIKit's motion effects (wallpaper, alerts, app
+// content shifting as the device tilts) with the same suspension UIKit uses
+// for screen mirroring, so nothing else changes the way Reduce Motion does.
+// UIKit keeps a reason given before its motion engine exists, and every
+// process (SpringBoard, the Lock Screen, apps) has an engine of its own.
+static NSString *const kSBTParallaxReason = @"cz.kolbi.sbtweaker.noParallax";
+static BOOL sbt_parallax_suspended = NO;
+
+static void sbt_apply_parallax(void) {
+    BOOL off = (sbt_cached_app_state & SBT_APP_NO_PARALLAX) != 0;
+    if (off == sbt_parallax_suspended) return;
+    Class view = [UIView class];
+    if (![view respondsToSelector:@selector(_beginSuspendingMotionEffectsForReason:)] ||
+        ![view respondsToSelector:@selector(_endSuspendingMotionEffectsForReason:)]) return;
+    sbt_parallax_suspended = off;
+    if (off) {
+        // Ease shifted views back to the centre first, as UIKit does before
+        // its own suspensions; a suspended engine stops updating them.
+        if ([view respondsToSelector:@selector(_recenterMotionEffects)])
+            [UIView animateWithDuration:0.25 animations:^{ [UIView _recenterMotionEffects]; }];
+        [UIView _beginSuspendingMotionEffectsForReason:kSBTParallaxReason];
+    } else {
+        [UIView _endSuspendingMotionEffectsForReason:kSBTParallaxReason];
+    }
 }
 
+static void sbt_refresh_app_state(void) {
+    sbt_cached_app_state = sbt_app_excluded ? 0 : sbt_app_state();
+    sbt_apply_parallax();
+}
+
+// Called from %ctor: the state is read right away, but UIKit is only touched
+// once the main queue runs.
 static void sbt_watch_app_state(void) {
-    sbt_refresh_app_state();
+    sbt_cached_app_state = sbt_app_excluded ? 0 : sbt_app_state();
+    dispatch_async(dispatch_get_main_queue(), ^{ sbt_apply_parallax(); });
     int watchToken;
     notify_register_dispatch(kSBTAppStateName, &watchToken, dispatch_get_main_queue(), ^(int t) {
         sbt_refresh_app_state();
@@ -2861,6 +2899,7 @@ static void sbt_publish_app_state(void) {
     uint64_t state = 0;
     if (sbc_pref_bool_live(CFSTR("fastCopy"))) state |= SBT_APP_FAST_COPY;
     if (sbc_pref_bool_live(CFSTR("dismissSpotlightAfterResult"))) state |= SBT_APP_DISMISS_SPOTLIGHT;
+    if (sbc_pref_bool_live(CFSTR("noParallax"))) state |= SBT_APP_NO_PARALLAX;
     if (sbc_pref_bool_live(CFSTR("noSlide"))) state |= SBT_APP_PAGE_TRANSITIONS;
     if (sbc_pref_bool_live(CFSTR("fastSheets"))) state |= SBT_APP_SHEETS;
     double slide = MIN(kNSMaxDuration, MAX(kNSMinDuration, sbc_pref_double_live(CFSTR("noSlideDuration"))));
@@ -2873,6 +2912,7 @@ static void sbt_publish_app_state(void) {
     state |= (uint64_t)llround(sheets * 1000.0) << SBT_APP_SHEETS_SHIFT;
     notify_set_state(token, state);
     sbt_cached_app_state = state;
+    sbt_apply_parallax();
     notify_post(kSBTAppStateName);
 }
 

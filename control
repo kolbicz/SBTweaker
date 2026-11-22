@@ -1,6 +1,6 @@
 Package: cz.kolbi.sbtweaker
 Name: SBTweaker
-Version: 1.5.1
+Version: 1.5.2~parallax1
 Architecture: iphoneos-arm
 Description: Opt-in SpringBoard customizations for rootless and roothide jailbreaks on iOS 15 and newer: dock and Home Screen layouts, icon backup, App Library, double-tap to lock, animations, navigation slide removal in apps, and fast copy.
 Maintainer: Christoph Kolbicz

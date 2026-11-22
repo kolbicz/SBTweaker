@@ -46,6 +46,7 @@ static inline NSDictionary *SBTDefaultValues(void) {
             @"noSleepFade": @NO,
             @"noIconsFlyIn": @NO,
             @"fastCopy": @NO,
+            @"noParallax": @NO,
             @"noSlide": @NO,
             @"noSlideDuration": @0.01,
             @"fastSheets": @NO,

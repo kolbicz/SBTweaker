@@ -354,9 +354,29 @@
 			<key>cell</key>
 			<string>PSGroupCell</string>
 			<key>label</key>
+			<string>Parallax</string>
+			<key>footerText</key>
+			<string>Stops the wallpaper, icons, alerts and app content from shifting as you tilt the device, without turning on Reduce Motion. Applies to the Home Screen, the Lock Screen and apps right away.</string>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSSwitchCell</string>
+			<key>defaults</key>
+			<string>cz.kolbi.sbtweaker</string>
+			<key>key</key>
+			<string>noParallax</string>
+			<key>label</key>
+			<string>Disable Parallax</string>
+			<key>default</key>
+			<false/>
+		</dict>
+		<dict>
+			<key>cell</key>
+			<string>PSGroupCell</string>
+			<key>label</key>
 			<string>Inside Apps</string>
 			<key>footerText</key>
-			<string>SBTweaker does nothing inside excluded apps: Fast Copy, Fast Page Transitions and Fast Sheets stay off in them. Everything on the Home Screen and Lock Screen is unaffected.</string>
+			<string>SBTweaker does nothing inside excluded apps: Fast Copy, Fast Page Transitions and Fast Sheets stay off and parallax stays on in them. Everything on the Home Screen and Lock Screen is unaffected.</string>
 		</dict>
 		<dict>
 			<key>cell</key>
